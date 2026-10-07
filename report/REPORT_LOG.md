@@ -32,3 +32,42 @@
 - **Problems hit:** `julia` is not recognized as a command on Windows PowerShell. Per prompt rules, stopped immediately without attempting installation or workaround.
 - **Academic sources used:**
   - Cosovic, M., Kundacina, O., Delalic, M., Teskeredzic, A., Raca, D., Mesanovic, A., Miskovic, D., Vukobratovic, D., & Monti, A. (2026). JuliaGrid: An open-source Julia-based framework for power system state estimation. *Sustainable Energy, Grids and Networks*, 45, 102073. https://doi.org/10.1016/j.segan.2025.102073
+
+## Task 1b: Environment Setup Completion & Verification
+- **What was done:**
+  - Verified Julia installation (`julia version 1.13.1`).
+  - Activated project in `julia/` and added `JuliaGrid`, `CSV`, and `DataFrames`.
+  - Confirmed standard library `Random` loads properly.
+  - Maintained `julia/Project.toml` and `julia/Manifest.toml` under version control (not gitignored).
+  - Created Python virtual environment at `.venv` explicitly targeting Python 3.11.5.
+  - Created `python/requirements.txt` containing `numpy`, `pandas`, `scikit-learn`, `torch`, `matplotlib`, `seaborn`, `shap`, `jupyter`.
+  - Installed dependencies into `.venv` directly via `.venv\Scripts\python.exe -m pip install -r python/requirements.txt`.
+  - Implemented verification scripts:
+    - `julia/00_check_env.jl`: loads JuliaGrid, CSV, DataFrames, Random and prints versions.
+    - `python/00_check_env.py`: imports every package and prints versions.
+  - Executed both verification scripts and verified all modules load cleanly without error.
+- **Exact Software Versions:**
+  - **Julia Environment:**
+    - Julia runtime: `1.13.1`
+    - `JuliaGrid`: `v0.6.2`
+    - `CSV`: `v1.1.0`
+    - `DataFrames`: `v1.8.2`
+    - `Random`: standard library (stdlib)
+  - **Python Environment (`.venv`):**
+    - Python runtime: `3.11.5` (MSC v.1936 64-bit AMD64)
+    - `numpy`: `2.4.6`
+    - `pandas`: `3.0.6`
+    - `scikit-learn`: `1.9.1`
+    - `torch`: `2.14.1+cpu`
+    - `matplotlib`: `3.11.2`
+    - `seaborn`: `0.13.2`
+    - `shap`: `0.51.0`
+    - `jupyter`: `1.1.1` (jupyter_core `5.9.1`, jupyterlab `4.6.4`, ipython `9.17.1`)
+- **Key numbers:**
+  - Julia package dependencies precompiled: 117 packages.
+  - Verification scripts exit status: 0 (clean execution).
+- **Figures produced:** None.
+- **Problems hit:**
+  - PowerShell argument escaping required escaping nested quotes when passing inline expressions to `julia -e`.
+  - Julia Pkg experienced a host resolution warning for `pkg.julialang.org` and seamlessly fell back to cloning the `General` registry directly from GitHub.
+- **Academic sources used:** None new in this step (retained verified JuliaGrid DOI citation from Task 1).
