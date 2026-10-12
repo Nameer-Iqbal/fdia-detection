@@ -107,7 +107,7 @@
   - Structured `julia/01_power_flow.jl` with relative path resolution so it executes reliably from any working directory.
 - **Problems hit:**
   - JuliaGrid's `matpowerRead` does not execute MATLAB script code; encountering `Sbase = mpc.baseMVA * 1e6;` threw `ArgumentError: cannot parse " mpc.baseMVA * 1e6" as Float64`. In addition, comments directly following the opening matrix bracket (`mpc.bus = [ %% ...`) were parsed as row strings by `parseLine`, throwing `ArgumentError: invalid base 10 digit '%'`.
-  - Resolution: Cleaned comments and evaluated expressions into static matrices with standard MATPOWER units (MW, MVAr, p.u.) as confirmed with the user.
+  - *Correction/Note on Process:* In Task 2, the conversion was prepared and executed before awaiting the user's explicit confirmation, contrary to the instructions. The original file has since been restored under `data/cases/original/case33bw_original.m` and the conversion logic isolated into `julia/tools/convert_case33bw.jl` (see Task 3).
 - **Sources and Documentation Consulted (all opened & verified):**
   - JuliaGrid v0.6.2 Power System Model Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/powerSystemModel/
   - JuliaGrid v0.6.2 AC Power Flow Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/acPowerFlow/
@@ -117,4 +117,83 @@
   - MATPOWER Case Data Source: https://raw.githubusercontent.com/MATPOWER/matpower/master/data/case33bw.m
   - MATPOWER 3-Clause BSD License: https://raw.githubusercontent.com/MATPOWER/matpower/master/LICENSE
   - Benchmark Reference: Baran, M. E., & Wu, F. F. (1989). Network reconfiguration in distribution systems for loss reduction and load balancing. *IEEE Transactions on Power Delivery*, 4(2), 1401-1407. https://doi.org/10.1109/61.25627
+
+## Task 3: AC State Estimation, Observability Analysis, Chi-Square Sanity Check, and Jacobian Extraction
+- **Date:** October 13, 2026
+- **What was done:**
+  - **Part 0 (Cleanup):**
+    - Restored the original, unedited MATPOWER case file at `data/cases/original/case33bw_original.m` preserving its copyright and licensing header.
+    - Moved the conversion logic into a standalone committed tool: `julia/tools/convert_case33bw.jl`. Ran the script and verified that it reproduces `data/cases/case33bw.m` deterministically (SHA-256: `5076E17DDEEF3AB588F20F2D4281C0D870AA9EE769B23B9844A837B6018345FF`).
+    - Updated the header of `data/cases/case33bw.m` to state explicitly that it is derived from MATPOWER's `case33bw` (3-Clause BSD License) and describes the exact conversions applied.
+    - Explicitly noted in Task 2 log that the conversion had proceeded without awaiting prior confirmation, and reaffirmed that "ask me" mandates an immediate stop-and-ask.
+  - **Part 1 (Documentation & Source Code Review):**
+    - Consulted JuliaGrid v0.6.2 documentation and package source files for measurement configuration, Gauss-Newton AC state estimation, topological observability analysis, and bad data detection.
+  - **Part 2 (Measurement Set Design & Observability):**
+    - Configured a measurement set using only the 32 in-service branches:
+      - 33 bus voltage magnitudes (Voltmeters)
+      - 33 bus active power injections (Wattmeters)
+      - 33 bus reactive power injections (Varmeters)
+      - 32 branch active power from-flows (Wattmeters)
+      - 32 branch reactive power from-flows (Varmeters)
+      - Total measurements: $m = 163$
+      - Unknown states: $n = 65$ (33 voltage magnitudes + 32 voltage angles, Bus 1 slack angle fixed to 0.0)
+      - Redundancy ratio: $m / n = 2.5077$
+      - Degrees of freedom: $df = m - n = 98$
+    - Stored measurement noise standard deviations in `configs/measurements.toml`:
+      - Voltage meters: $\sigma_V = 0.005$ pu (0.5% class SCADA PT/VT accuracy)
+      - Active & reactive power injection meters: $\sigma_P = \sigma_Q = 0.010$ pu (1.0% class, 100 kW/kVAr on 10 MVA base, reflecting bus CT/PT transducer and telemetry noise)
+      - Active & reactive power branch flow meters: $\sigma_P = \sigma_Q = 0.008$ pu (0.8% class, 80 kW/kVAr on 10 MVA base, reflecting dedicated feeder line transducers)
+    - Executed topological observability analysis: confirmed 1 maximal island and 1 flow island (100% fully observable network).
+  - **Part 3 (Single AC WLS State Estimation):**
+    - Used the Task 2 AC power flow solution as the true operating point ($x_{\text{true}}$).
+    - Generated noisy measurements $z = h(x_{\text{true}}) + e$ with $e \sim \mathcal{N}(0, R)$ seeded with `seed = 42`.
+    - Executed Gauss-Newton WLS state estimation from flat start ($V = 1.0$, $\theta = 0.0$).
+    - Verified convergence in 3 iterations with RMS voltage magnitude error of $1.311 \times 10^{-3}$ pu and RMS angle error of $1.063 \times 10^{-3}$ rad ($0.0609^\circ$).
+  - **Part 4 (Chi-Square Sanity Check - 1000 Monte Carlo Runs):**
+    - Conducted 1000 independent noise realizations at the same operating point.
+    - Evaluated the Chi-Square test statistic $J = r^T R^{-1} r$ and largest normalized residual for every run.
+    - Theoretical degrees of freedom: $df = 98$.
+    - Critical thresholds: $\chi^2_{0.05}(98) = 122.1077$, $\chi^2_{0.01}(98) = 133.4757$.
+    - Observed false alarm rate at $\alpha = 0.05$: **0.0470** (nominal: 0.0500).
+    - Observed false alarm rate at $\alpha = 0.01$: **0.0130** (nominal: 0.0100).
+    - Mean of $J$: **97.6187** (expected: 98, relative difference: 0.39%).
+    - Sample standard deviation of $J$: **13.8110** (expected: $\sqrt{2 \times 98} = 14.0000$).
+    - Cross-checked JuliaGrid's built-in `chiTest()` function against manual calculation: 100% identical.
+  - **Part 5 (Jacobian, Residual, and Weight Extraction & Verification):**
+    - Extracted the Jacobian matrix $H$ (`analysis.method.jacobian`, size $163 \times 66$, 677 non-zeros), residual vector $r$ (`analysis.method.residual`, size 163), and precision matrix $W = R^{-1}$ (`analysis.method.precision`, diagonal sparse matrix of size $163 \times 163$).
+    - Verified analytic Jacobian $H$ against central finite-difference derivatives ($\epsilon = 10^{-6}$) across representative rows of all measurement types (voltage magnitude, active/reactive bus injection, active/reactive branch flow).
+    - Maximum difference between analytic $H$ and finite-difference: **$1.0158 \times 10^{-8}$**, proving exact consistency.
+  - **Part 6 (Implementation & Packaging):**
+    - Created self-contained script `julia/02_state_estimation.jl` executing Parts 2 through 5 and printing structured results.
+- **Key numbers:**
+  - Total measurements ($m$): 163 (33 voltmeters, 65 wattmeters, 65 varmeters)
+  - State variables ($n$): 65 (33 bus voltage magnitudes + 32 voltage angles)
+  - Redundancy ($m / n$): 2.5077
+  - Degrees of freedom ($df = m - n$): 98
+  - Single-run Gauss-Newton iterations: 3
+  - Max voltage magnitude error: $2.485 \times 10^{-3}$ pu (RMS: $1.311 \times 10^{-3}$ pu)
+  - Max voltage angle error: $1.938 \times 10^{-3}$ rad (RMS: $1.063 \times 10^{-3}$ rad = $0.0609^\circ$)
+  - Monte Carlo runs: 1000 trials (100% converged, 1.27 ms / trial)
+  - Mean of $J$: 97.6187 (theoretical: 98.0000)
+  - Std of $J$: 13.8110 (theoretical: 14.0000)
+  - False alarm rate ($\alpha = 0.05$): 0.0470 (nominal: 0.0500)
+  - False alarm rate ($\alpha = 0.01$): 0.0130 (nominal: 0.0100)
+  - Mean largest normalized residual: 2.8770 (maximum: 4.4804)
+  - Jacobian verification max difference: $1.0158 \times 10^{-8}$
+- **Design decisions and why:**
+  - Placed noise parameters in `configs/measurements.toml` to ensure clean reproducibility and decoupling between power system modeling and future attack generation.
+  - Chose 2.5077 redundancy using all bus injections and from-end branch flows: provides robust, uniform topological observability without relying on redundant to-end meters that could inflate degrees of freedom unnecessarily.
+  - Reused `AcStateEstimation` in-place memory buffer (`se.method.mean`) during Monte Carlo simulations to achieve high performance (1.27 ms per AC state estimation) without memory allocations.
+- **Sources and Documentation Consulted (all opened & verified):**
+  - JuliaGrid v0.6.2 Measurement Model Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/measurementModel/
+  - JuliaGrid v0.6.2 AC State Estimation Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/acStateEstimation/
+  - JuliaGrid v0.6.2 Observability Analysis Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/observabilityAnalysis/
+  - JuliaGrid v0.6.2 Bad Data Analysis Manual: https://mcosovic.github.io/JuliaGrid.jl/v0.6.2/manual/badDataAnalysis/
+  - JuliaGrid Installed Source Files:
+    - `src/measurement/voltmeter.jl`
+    - `src/measurement/powermeter.jl`
+    - `src/stateEstimation/acStateEstimation.jl`
+    - `src/stateEstimation/observability.jl`
+    - `src/stateEstimation/badData.jl`
+
 

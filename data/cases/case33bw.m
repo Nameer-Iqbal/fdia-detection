@@ -8,10 +8,16 @@ function mpc = case33bw
 %       on Power Delivery, vol. 4, no. 2, pp. 1401-1407, Apr 1989.
 %       doi: 10.1109/61.25627
 %       URL: https://doi.org/10.1109/61.25627
+
 %
-%   Source: MATPOWER (https://raw.githubusercontent.com/MATPOWER/matpower/master/data/case33bw.m)
-%   Converted for JuliaGrid: loads converted from kW/kVAr to MW/MVAr, impedances converted
-%   from Ohms to p.u. (Vbase = 12.66 kV, Sbase = 10 MVA, Zbase = 16.02756 Ohm).
+%   Derived from MATPOWER's case33bw (3-Clause BSD License).
+%   Source: https://raw.githubusercontent.com/MATPOWER/matpower/master/data/case33bw.m
+%   Conversions applied:
+%     - Bus active/reactive loads converted from kW/kVAr to MW/MVAr (divided by 1000).
+%     - Branch resistances/reactances converted from Ohms to p.u.
+%       (Vbase = 12.66 kV, Sbase = 10 MVA, Zbase = 16.02756 Ohm).
+%     - Stripped dynamic MATLAB script commands and opening-bracket comments
+%       for compatibility with JuliaGrid's static matrix parser.
 
 %% MATPOWER Case Format : Version 2
 mpc.version = '2';
@@ -113,3 +119,5 @@ mpc.branch = [
 mpc.gencost = [
 	2	0	0	3	0	20	0;
 ];
+
+

@@ -1,0 +1,27 @@
+# Measurement configuration for IEEE 33-bus system state estimation
+# System Base: 10.0 MVA, 12.66 kV
+
+[system]
+case_file = "data/cases/case33bw.m"
+base_mva = 10.0
+num_buses = 33
+num_in_service_branches = 32
+
+[state_estimation]
+seed = 42
+num_trials = 1000
+alpha_levels = [0.05, 0.01]
+max_iterations = 40
+tolerance = 1e-8
+
+# Measurement noise standard deviations (in per-unit on 10 MVA base)
+# Reasoning:
+# - Voltage meters (PT/VT): 0.5% typical accuracy class (0.005 pu).
+# - Power injection meters: 1.0% class (0.01 pu = 100 kW on 10 MVA base), reflecting bus transducer + telemetry error.
+# - Power flow meters: 0.8% class (0.008 pu = 80 kW on 10 MVA base), reflecting feeder monitoring line transducers.
+[noise]
+voltmeter_std = 0.005
+power_injection_active_std = 0.010
+power_injection_reactive_std = 0.010
+power_flow_active_std = 0.008
+power_flow_reactive_std = 0.008
