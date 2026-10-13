@@ -11,6 +11,7 @@ __pycache__/
 
 # Data & Model Checkpoints
 data/*.csv
+data/*.json
 *.pt
 
 # OS / IDE artifacts

@@ -1,0 +1,54 @@
+# ==============================================================================
+# Configuration for Normal Dataset Generation (Task 4)
+# System: IEEE 33-Bus Radial Distribution System
+# Base Power: 10.0 MVA, Base Voltage: 12.66 kV
+# ==============================================================================
+
+[system]
+case_file = "data/cases/case33bw.m"
+base_mva = 10.0
+num_buses = 33
+num_in_service_branches = 32
+
+[dataset]
+master_seed = 42
+num_samples = 200          # Development size; production run will increase this
+samples_per_day = 24       # Hourly sampling cadence across 24h cycle
+
+[operating_point]
+# Global load scaling range (multipliers applied to nominal base load)
+# Upper bound 1.08 ensures minimum bus voltage remains strictly >= 0.90 pu
+load_factor_min = 0.60
+load_factor_max = 1.08
+# Independent per-bus Gaussian load perturbation std (constant power factor per bus)
+per_bus_noise_std = 0.025
+
+[daily_profile]
+# Diurnal shape: trough during late night (~04:00), peak in evening (~20:00)
+# Harmonic coefficients: c1 (24h fundamental), c2 (12h second harmonic)
+peak_hour = 20.0
+c1 = 0.50
+c2 = 0.20
+
+[state_estimation]
+tolerance = 1e-8
+max_iterations = 40
+alpha_levels = [0.05, 0.01]
+num_load_bins = 5
+
+# Measurement noise standard deviations (in per-unit on 10 MVA base)
+# Matches Task 3 measurement configuration:
+# - Voltmeters: 0.5% class (0.005 pu)
+# - Injection meters: 1.0% class (0.010 pu)
+# - Flow meters: 0.8% class (0.008 pu)
+[noise]
+voltmeter_std = 0.005
+power_injection_active_std = 0.010
+power_injection_reactive_std = 0.010
+power_flow_active_std = 0.008
+power_flow_reactive_std = 0.008
+
+[output]
+dataset_file = "data/normal_dev.csv"
+metadata_file = "data/normal_dev_meta.json"
+jacobian_file = "data/H_example.csv"

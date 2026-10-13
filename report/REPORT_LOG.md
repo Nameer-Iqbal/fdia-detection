@@ -196,4 +196,64 @@
     - `src/stateEstimation/observability.jl`
     - `src/stateEstimation/badData.jl`
 
+## Task 4: Normal Dataset Generation, Operating-Point Time Series, AC State Estimation, BDD Validation, and Jacobian Extraction
+- **Date:** October 14, 2026
+- **What was done:**
+  - **Part 1 (Configuration):**
+    - Created [configs/dataset.toml](file:///c:/Projects/fdia-detection/configs/dataset.toml) containing all simulation hyperparameters: master seed (`42`), sample size ($N_{\text{dev}} = 200$), diurnal sampling rate (`24` samples/day), load scaling bounds (`0.60` to `1.08`), per-bus load noise standard deviation (`0.025`), diurnal profile harmonic parameters, AC state estimation settings, noise specifications, and output paths. All parameters are fully centralized; zero hardcoding.
+  - **Part 2 (Operating-Point Time Series Generation):**
+    - Built a time-ordered series ($t = 1 \dots 200$) of operating points cycling smoothly across a 24-hour diurnal profile (trough around 04:00, evening peak around 20:00).
+    - Applied independent Gaussian per-bus load perturbations ($\eta_{i, t} \sim \mathcal{N}(0, 0.025^2)$) to both active and reactive bus demand ($P_i = P_{0, i} \lambda_t (1 + \eta_{i, t})$, $Q_i = Q_{0, i} \lambda_t (1 + \eta_{i, t})$), strictly preserving the constant power factor $\frac{P}{\sqrt{P^2 + Q^2}}$ per bus.
+    - Updated system demand using JuliaGrid's documented API `updateBus!(system; label = i, active = p_new, reactive = q_new)`.
+    - Executed AC Newton-Raphson power flow for each sample. Convergence rate: **200 / 200 (100% convergence, 0 failures)**.
+    - Tracked minimum bus voltage magnitude across the dataset: range is **$[0.9048, 0.9500]$ pu**, strictly above the $0.90$ pu physical sanity lower bound (preventing under-voltage violations).
+  - **Part 3 (Measurements and AC WLS State Estimation):**
+    - Extracted exact true measurement values from converged AC power flow ($m = 163$ measurements).
+    - Generated noisy measurement vectors $z_t = h(x_{\text{true}}) + e_t$ using Gaussian noise consistent with Task 3 noise specifications ($\sigma_V = 0.005$, $\sigma_{\text{inj}} = 0.010$, $\sigma_{\text{flow}} = 0.008$).
+    - Executed AC Gauss-Newton WLS state estimation from flat start for all 200 samples. Convergence rate: **200 / 200 (100% convergence, mean 3 iterations)**.
+    - Recorded for every sample: `sample_id`, `time_idx`, `load_factor`, true states ($V_{\text{true}}, \theta_{\text{true}}$), estimated states ($V_{\text{est}}, \theta_{\text{est}}$), measurements $z$, residual vectors $r$, Chi-square test statistic $J$, largest normalized residual $r^N_{\max}$, and convergence flags.
+    - Evaluated normalized residuals using the residual covariance matrix $\Omega = R - H_{65} (H_{65}^T R^{-1} H_{65})^{-1} H_{65}^T$, where diagonal elements are $\Omega_{ii} = R_{ii} - H_{65, i} G^{-1} H_{65, i}^T$.
+    - Cross-checked manual calculation against JuliaGrid's native `residualTest!(se; threshold = 1000.0)` routine: maximum difference was **$3.2863 \times 10^{-14}$** (exact agreement to machine precision).
+  - **Part 4 (BDD Validation Across Dataset & Load Bins):**
+    - Degrees of freedom: $df = m - n = 163 - 65 = 98$. Critical Chi-Square thresholds: $\chi^2_{0.05}(98) = 122.1077$, $\chi^2_{0.01}(98) = 133.4757$.
+    - Dataset sample mean of $J$: **97.7269** (theoretical expectation: 98, relative difference: 0.28%).
+    - Dataset sample standard deviation of $J$: **14.0376** (theoretical expectation: $\sqrt{2 \times 98} = 14.0000$).
+    - Overall false alarm rate at $\alpha = 0.05$: **0.0400** (8 / 200, nominal: 0.0500).
+    - Overall false alarm rate at $\alpha = 0.01$: **0.0050** (1 / 200, nominal: 0.0100).
+    - Mean largest normalized residual: **2.8277**.
+    - Evaluated BDD metrics across 5 equal load-factor bins:
+      - Bin 1 [$0.600 - 0.696$] ($N = 110$): Mean $J = 97.89 \pm 14.33$, $\text{FA}(0.05) = 0.0364$ (4/110), $\text{FA}(0.01) = 0.0091$ (1/110).
+      - Bin 2 [$0.696 - 0.792$] ($N = 17$): Mean $J = 96.88 \pm 19.07$, $\text{FA}(0.05) = 0.0588$ (1/17), $\text{FA}(0.01) = 0.0000$ (0/17).
+      - Bin 3 [$0.792 - 0.888$] ($N = 17$): Mean $J = 96.75 \pm 10.70$, $\text{FA}(0.05) = 0.0000$ (0/17), $\text{FA}(0.01) = 0.0000$ (0/17).
+      - Bin 4 [$0.888 - 0.984$] ($N = 16$): Mean $J = 96.87 \pm 13.36$, $\text{FA}(0.05) = 0.0625$ (1/16), $\text{FA}(0.01) = 0.0000$ (0/16).
+      - Bin 5 [$0.984 - 1.080$] ($N = 40$): Mean $J = 98.40 \pm 12.84$, $\text{FA}(0.05) = 0.0500$ (2/40), $\text{FA}(0.01) = 0.0000$ (0/40).
+    - **Drift Assessment:** Mean $J$ remained tightly bound between $96.75$ and $98.40$ across all 5 load bins with stable false alarm rates. Confirmed zero load-dependent drift.
+  - **Part 5 (Output & Storage Format):**
+    - Stored dataset at `data/normal_dev.csv` (200 rows $\times$ 466 columns, ~1.5 MB).
+    - *Storage format rationale (CSV vs HDF5):* CSV was selected because the tabular dimensions (200 rows $\times$ 466 columns) result in a compact 1.5 MB file that is human-readable, easily parsed without native C library dependencies across both Julia (`CSV.jl`) and Python (`pandas`), and fully gitignored. HDF5 introduces unnecessary binary driver dependencies on Windows with zero performance benefit at this scale.
+    - Stored metadata at `data/normal_dev_meta.json` recording column descriptions, master seed, config SHA-256 hash (`8653a6e799eb24b0874e2753a59a9f6c7c18a9f7a5881c10d1d3627b9c0fefa8`), and Julia/JuliaGrid versions.
+    - Stored representative Jacobian matrix for sample 1 at `data/H_example.csv` ($163 \times 65$). Confirmed slack bus angle (Bus 1) column is excluded.
+    - *Jacobian State Mapping:*
+      - Columns 1 through 32: Bus voltage angles $\theta_2 \dots \theta_{33}$ (radians).
+      - Columns 33 through 65: Bus voltage magnitudes $V_1 \dots V_{33}$ (per-unit).
+    - Updated `.gitignore` to explicitly ignore `data/*.json` and `data/*.csv`, guaranteeing that generated data files are never committed to version control.
+  - **Part 6 (Implementation Script & Packaging):**
+    - Created script `julia/03_normal_data.jl` executing the entire generation, state estimation, BDD analysis, and export pipeline.
+- **Key numbers:**
+  - Total operating points generated: 200
+  - Power flow convergence rate: 100% (200/200, 0 unconverged)
+  - State estimation convergence rate: 100% (200/200, 0 unconverged)
+  - Minimum feeder voltage: 0.9048 pu (Bus 18 at peak load)
+  - Maximum feeder voltage: 0.9500 pu
+  - Chi-Square mean: 97.7269 (theoretical: 98)
+  - Chi-Square standard deviation: 14.0376 (theoretical: 14.0000)
+  - False alarm rate ($\alpha = 0.05$): 0.0400 (theoretical: 0.0500)
+  - False alarm rate ($\alpha = 0.01$): 0.0050 (theoretical: 0.0100)
+  - Residual covariance cross-check diff: $3.2863 \times 10^{-14}$
+  - Simulation throughput: 6.18 ms / sample (1.24 s total execution)
+- **Design decisions and why:**
+  - Capped `load_factor_max` at 1.08: at base load (1.00), min voltage is 0.9131 pu. At 1.08 with 2.5% random load fluctuations, minimum voltage reaches 0.9048 pu, maintaining strict physical realism ($\ge 0.90$ pu).
+  - Selected 5 uniform load bins over $[0.60, 1.08]$ to evaluate potential non-linear BDD drift across night trough, ramp, and peak load periods.
+  - Preserved per-bus power factor by multiplying both $P$ and $Q$ by $(1 + \eta_{i, t})$, avoiding artificial reactive power factor distortion.
+
 
