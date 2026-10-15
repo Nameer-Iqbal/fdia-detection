@@ -1,5 +1,5 @@
 # ==============================================================================
-# Configuration for Normal Dataset Generation (Task 4)
+# Configuration for Normal Dataset Generation (Task 4 & 5)
 # System: IEEE 33-Bus Radial Distribution System
 # Base Power: 10.0 MVA, Base Voltage: 12.66 kV
 # ==============================================================================
@@ -12,7 +12,9 @@ num_in_service_branches = 32
 
 [dataset]
 master_seed = 42
-num_samples = 200          # Development size; production run will increase this
+num_samples = 5000         # Full dataset size
+num_dev_samples = 200      # Small development size
+use_dev_size = false       # Toggle true to run N=200 dev size, false for full N=5000
 samples_per_day = 24       # Hourly sampling cadence across 24h cycle
 
 [operating_point]
@@ -24,11 +26,11 @@ load_factor_max = 1.08
 per_bus_noise_std = 0.025
 
 [daily_profile]
-# Diurnal shape: trough during late night (~04:00), peak in evening (~20:00)
-# Harmonic coefficients: c1 (24h fundamental), c2 (12h second harmonic)
+# Diurnal shape: smoothed triangular profile avoiding flat floor clipping
+# Phase: peak at 20:00 (evening peak), trough at 08:00 (morning/night base)
 peak_hour = 20.0
-c1 = 0.50
-c2 = 0.20
+trough_hour = 8.0
+smoothness = 0.96          # Smoothing parameter alpha in asin(alpha*sin(theta))
 
 [state_estimation]
 tolerance = 1e-8
@@ -49,6 +51,7 @@ power_flow_active_std = 0.008
 power_flow_reactive_std = 0.008
 
 [output]
-dataset_file = "data/normal_dev.csv"
-metadata_file = "data/normal_dev_meta.json"
+dataset_file = "data/normal_data.csv"
+dev_dataset_file = "data/normal_dev.csv"
+metadata_file = "data/normal_meta.json"
 jacobian_file = "data/H_example.csv"

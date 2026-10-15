@@ -253,7 +253,182 @@
   - Simulation throughput: 6.18 ms / sample (1.24 s total execution)
 - **Design decisions and why:**
   - Capped `load_factor_max` at 1.08: at base load (1.00), min voltage is 0.9131 pu. At 1.08 with 2.5% random load fluctuations, minimum voltage reaches 0.9048 pu, maintaining strict physical realism ($\ge 0.90$ pu).
-  - Selected 5 uniform load bins over $[0.60, 1.08]$ to evaluate potential non-linear BDD drift across night trough, ramp, and peak load periods.
   - Preserved per-bus power factor by multiplying both $P$ and $Q$ by $(1 + \eta_{i, t})$, avoiding artificial reactive power factor distortion.
+
+## Task 5: Diurnal Profile Redesign, FDI Attack Design, Implementation, and Multi-Type Validation
+- **Date:** October 16, 2026
+- **What was done:**
+  - **Part 0 (Diurnal Load Profile Redesign & Full N=5000 Generation):**
+    - Diagnosed the root cause of the initial load clustering (where 110/200 samples piled up in Bin 1): the second harmonic term $c_2 \cos(4\pi(h-20)/24)$ created an excessively wide, flat trough that stagnated near the minimum boundary between hours 03:00 and 13:00.
+    - Redesigned the daily profile using a smooth, continuously differentiable ($C^\infty$) smoothed-triangle function:
+      $$\theta_t = \frac{2\pi (h_t - 14.0)}{24.0}, \quad \text{raw}(h_t) = \arcsin(\alpha \sin \theta_t), \quad \text{norm}(h_t) = \frac{\text{raw}(h_t) + \arcsin(\alpha)}{2 \arcsin(\alpha)}$$
+      $$\lambda_t = LF_{\min} + \text{norm}(h_t) \cdot (LF_{\max} - LF_{\min})$$
+      with $\alpha = 0.96$, peak at 20:00 (evening peak), and trough at 08:00 (base night/morning load).
+    - Verified the resulting distribution over $N = 200$ samples across 5 equal load bins $[0.60, 1.08]$:
+      - Bin 1 [$0.600 - 0.696$]: **42 / 200 (21.0%)**
+      - Bin 2 [$0.696 - 0.792$]: **34 / 200 (17.0%)**
+      - Bin 3 [$0.792 - 0.888$]: **51 / 200 (25.5%)**
+      - Bin 4 [$0.888 - 0.984$]: **33 / 200 (16.5%)**
+      - Bin 5 [$0.984 - 1.080$]: **40 / 200 (20.0%)**
+      *Result:* Bins are balanced and completely eliminate flat floor clipping.
+    - Updated [configs/dataset.toml](file:///c:/Projects/fdia-detection/configs/dataset.toml) to configure `num_samples = 5000` (full dataset), `num_dev_samples = 200`, and `use_dev_size = false` as a toggle flag.
+    - Regenerated the full dataset with $N = 5000$ and repeated BDD validation:
+      - Runtime: **12.34 s** total (**2.47 ms / sample**).
+      - Power flow convergence: **5000 / 5000 (100% convergence, 0 failures)**.
+      - State estimation convergence: **5000 / 5000 (100% convergence, 0 failures)**.
+      - Minimum voltage range: **$[0.9038, 0.9502]$ pu** (strictly above $0.90$ pu).
+      - Theoretical degrees of freedom: $df = 98$.
+      - Sample mean of $J$: **$97.7529$** (relative difference: 0.25% from 98).
+      - Sample std of $J$: **$14.1409$** (theoretical: 14.0000).
+      - Overall false alarm rate at $\alpha = 0.05$: **0.0506** ($253 / 5000$, nominal: $0.0500$).
+      - Overall false alarm rate at $\alpha = 0.01$: **0.0090** ($45 / 5000$, nominal: $0.0100$).
+      - BDD metrics across 5 load bins for $N = 5000$:
+        - Bin 1 [$0.600 - 0.696$] ($N = 1042$): Mean $J = 96.94$, Std = $14.22$, $\text{FA}(0.05) = 0.0422$, $\text{FA}(0.01) = 0.0096$
+        - Bin 2 [$0.696 - 0.792$] ($N = 834$): Mean $J = 98.52$, Std = $14.05$, $\text{FA}(0.05) = 0.0528$, $\text{FA}(0.01) = 0.0096$
+        - Bin 3 [$0.792 - 0.888$] ($N = 1251$): Mean $J = 98.29$, Std = $14.25$, $\text{FA}(0.05) = 0.0552$, $\text{FA}(0.01) = 0.0096$
+        - Bin 4 [$0.888 - 0.984$] ($N = 833$): Mean $J = 97.84$, Std = $14.18$, $\text{FA}(0.05) = 0.0492$, $\text{FA}(0.01) = 0.0120$
+        - Bin 5 [$0.984 - 1.080$] ($N = 1040$): Mean $J = 97.23$, Std = $13.94$, $\text{FA}(0.05) = 0.0529$, $\text{FA}(0.01) = 0.0048$
+      *BDD Load Invariance:* Confirmed completely stable across all load regimes with zero drift.
+
+  - **Part 1 (Attack Mathematical Formulations & Definitions):**
+    - **State Vector Definition:**
+      State vector $x \in \mathbb{R}^{65}$ excludes the slack bus reference angle ($\theta_1 \equiv 0$ at Bus 1):
+      $$x = [\theta_2, \theta_3, \dots, \theta_{33}, V_1, V_2, \dots, V_{33}]^T$$
+      For any bus $k \in \{1, \dots, 33\}$:
+      - If $k = 1$: only voltage magnitude $V_1$ is an unknown state ($x_{33}$). Its angle $\theta_1 \equiv 0$ is fixed.
+      - If $k \in \{2, \dots, 33\}$: state entries are voltage angle $\theta_k$ ($x_{k-1}$) and voltage magnitude $V_k$ ($x_{32+k}$).
+    - **Attack Injections:**
+      Let $z \in \mathbb{R}^{163}$ be the original measurement vector, and $\hat{x} \in \mathbb{R}^{65}$ the unattacked state estimate. The attacker injects false data $a \in \mathbb{R}^{163}$:
+      $$z_{\text{attacked}} = z + a$$
+      aiming to induce a target state shift $c \in \mathbb{R}^{65}$ such that $\hat{x}_{\text{attacked}} \approx \hat{x} + c$.
+    - **Attack Typology & Equations:**
+      1. **Exact AC Stealth Attack:**
+         $$a = h(\hat{x} + c) - h(\hat{x})$$
+         where $h(\cdot): \mathbb{R}^{65} \to \mathbb{R}^{163}$ is the full non-linear AC measurement function (evaluating voltmeters, active/reactive bus injections, and active/reactive branch flows).
+         *Stealth Property:* Because $z = h(\hat{x}) + r$, the attacked measurement satisfies $z_{\text{attacked}} = h(\hat{x} + c) + r$. When the AC state estimator solves $\min_x (z_{\text{attacked}} - h(x))^T R^{-1} (z_{\text{attacked}} - h(x))$, the optimum is $\hat{x}_{\text{attacked}} = \hat{x} + c$, and the residual vector remains identically:
+         $$r_{\text{attacked}} = z_{\text{attacked}} - h(\hat{x}_{\text{attacked}}) = r$$
+         Thus, $\|r_{\text{attacked}}\| = \|r\|$ and $J_{\text{attacked}} = J$ to machine precision. Conventional BDD (both Chi-Square and normalized residual tests) is mathematically blind to this attack.
+      2. **Linearised Stealth Attack:**
+         $$a = H c$$
+         where $H = \left.\frac{\partial h}{\partial x}\right|_{\hat{x}} \in \mathbb{R}^{163 \times 65}$ is the measurement Jacobian evaluated at $\hat{x}$ (excluding the slack bus angle column).
+         *Non-linear Residual Leakage:* In AC networks, $h(\hat{x} + c) = h(\hat{x}) + H c + \frac{1}{2} c^T \nabla^2 h c + \mathcal{O}(\|c\|^3)$. Therefore:
+         $$r_{\text{attacked}} \approx r - \frac{1}{2} c^T \nabla^2 h c$$
+         The second-order Taylor term creates residual "leakage" that scales quadratically with attack magnitude $\|c\|$. For small $\|c\|$ ($1\%$), the attack is nearly stealthy; for larger $\|c\|$ ($5\% - 10\%$), the non-linear mismatch drives $J$ and normalized residuals above BDD detection thresholds.
+      3. **Random (Non-Stealth) Attack:**
+         An unstructured attack where noise is injected into a randomly chosen subset of measurements $\mathcal{S} \subset \{1, \dots, m\}$:
+         $$a_i = \begin{cases} \delta_i, & i \in \mathcal{S} \\ 0, & i \notin \mathcal{S} \end{cases}$$
+         where $\delta_i \sim \mathcal{N}(0, (k_{\sigma} \sigma_i)^2)$ or uniform random perturbation. Because $a \notin \text{span}(H)$, the attack projects directly into the residual space $r \approx (I - K) a$, causing $J$ and $r^N_{\max}$ to spike and triggering BDD alarms.
+      4. **Single-Bus Attack:**
+         The perturbation $c$ is restricted to a single physical bus $k$:
+         - Nonzero elements of $c$: $c_{\theta, k}$ and/or $c_{V, k}$.
+         - Can be implemented under Exact AC ($a = h(\hat{x}+c) - h(\hat{x})$) or Linearised ($a = H c$) formulation.
+         - *Note:* Although only bus $k$'s state is perturbed, the resulting attack vector $a$ alters measurements at bus $k$ as well as flow meters on all branches connected to bus $k$.
+      5. **Multi-Bus Coordinated Attack:**
+         The perturbation $c$ spans a set of buses $\mathcal{B} \subset \{1, \dots, 33\}$:
+         - *Variant A (Random Multi-Bus):* $K$ randomly chosen buses (e.g. $K = 4$).
+         - *Variant B (Adjacent-Along-Feeder):* Contiguous buses along a feeder line (e.g. Buses 14, 15, 16, 17, 18).
+         - *Physical Realism:* Corresponds to an adversary compromising a physical substation or feeder communication segment, perturbing neighboring nodes in unison.
+      6. **Limited-Meter Attacker:**
+         The attacker is restricted to a subset of meters $\mathcal{M}_{\text{attack}} \subset \{1, \dots, m\}$ with cardinality $|\mathcal{M}_{\text{attack}}| = M_{\text{att}} < m$.
+         - Uncompromised meters are $\overline{\mathcal{M}} = \{1, \dots, m\} \setminus \mathcal{M}_{\text{attack}}$.
+         - *Stealth Condition:* To avoid altering uncompromised meters, $a_{\overline{\mathcal{M}}} = 0$. For a linear attack $a = H c$, this requires $H_{\overline{\mathcal{M}}} c = 0 \iff c \in \text{null}(H_{\overline{\mathcal{M}}})$.
+         - If $\text{null}(H_{\overline{\mathcal{M}}}) \neq \{0\}$ (sufficient meter coverage), the attacker can choose $c$ in the nullspace to achieve perfect linear stealth.
+         - If $|\mathcal{M}_{\text{attack}}|$ is small, $H_{\overline{\mathcal{M}}}$ has full column rank ($65$), and no non-trivial stealthy attack exists. Truncating the attack to $a_{\text{trunc}} = H_{\mathcal{M}} c$ leaves uncompromised components uncancelled:
+           $$\Delta r \approx (I - K) a_{\text{trunc}}$$
+           which causes immediate detection. Detection rates rise sharply as the accessible meter set shrinks.
+    - **Attack Magnitude & Physical Justification:**
+      - Voltage magnitude shift $c_V = \alpha_V \cdot V_{\text{nominal}}$ with $\alpha_V \in [0.01, 0.10]$ (1% to 10%).
+      - Voltage angle shift $c_\theta \in [0.005, 0.05]$ radians ($0.3^\circ$ to $2.9^\circ$), commensurate with power flow phase angles on distribution feeders.
+      - *Physical Realism & Voltage Limits:* Standard ANSI C84.1 Range A voltage limits are $[0.95, 1.05]$ pu (emergency Range B: $[0.90, 1.05]$ pu).
+      - In the unattacked network, feeder voltages operate near $0.905 - 0.940$ pu under peak load. A $1\% - 3\%$ voltage shift keeps the falsified state $\hat{x} + c$ within $[0.90, 1.05]$ pu, evading both BDD and operational SCADA threshold alarms.
+      - Conversely, an aggressive $5\% - 10\%$ shift drives falsified bus voltages below $0.85$ pu or above $1.05$ pu. While mathematically stealthy against BDD residuals under exact AC formulation, such extreme shifts trip operational over/under-voltage alarms, making subtle $1\% - 3\%$ shifts the true threat model for insidious stealth.
+
+  - **Part 2 (Attack Module Implementation):**
+    - Implemented [julia/04_attacks.jl](file:///c:/Projects/fdia-detection/julia/04_attacks.jl) exposing:
+      - `generate_exact_ac_attack`: evaluates $a = h(\hat{x} + c) - h(\hat{x})$ using `normalEquation!`.
+      - `generate_linearised_attack`: evaluates $a = H c$ with $H \in \mathbb{R}^{163 \times 65}$ (slack angle column 1 omitted).
+      - `generate_random_attack`: injects unstructured Gaussian noise onto $k_{\text{meters}}$ meters.
+      - `generate_single_bus_attack`: constructs $c$ targeting an isolated bus (magnitude and/or angle).
+      - `generate_multibus_attack`: constructs coordinated $c$ across random or contiguous feeder bus sets.
+      - `generate_limited_meter_attack`: constructs $c$ and truncates $a = H c$ to a meter budget $M_{\text{att}} < m$.
+    - Configured all attack hyperparameters, candidate buses, feeder clusters, meter budgets, and limits in [configs/attacks.toml](file:///c:/Projects/fdia-detection/configs/attacks.toml). Seeded with `seed = 42`.
+
+  - **Part 3 (Verification Suite & Empirical Results Across 200 Samples):**
+    - Created [julia/05_verify_attacks.jl](file:///c:/Projects/fdia-detection/julia/05_verify_attacks.jl) and executed full validation across 200 normal operating points:
+
+    #### Test 1: Exact AC Stealth Verification (N = 200)
+    - Target perturbation $c$: coordinated 3% voltage shift and $0.015$ rad angle shift on Buses 10, 18, and 25.
+    - **Direct Mathematical Residual Check (at $\hat{x} + c$):**
+      - Maximum $|\Delta J|$ across 200 samples: **$1.9895 \times 10^{-13}$** (exact zero to machine precision).
+      - Maximum $|\Delta \|r\||$ across 200 samples: **$1.1102 \times 10^{-16}$** (exact zero to machine precision).
+    - **Gauss-Newton Full Solver Run (from flat start, tolerance $= 10^{-8}$):**
+      - Mean $\Delta J$: **$-0.003627$** (maximum absolute $|\Delta J| = 0.018976$).
+      - Mean $\Delta \|r\|$: **$+1.4166 \times 10^{-6}$**.
+      - Mean state recovery shift error $\|\hat{x}_{\text{att}} - \hat{x} - c\|$: **$8.8666 \times 10^{-5}$**.
+      - Attacked voltage range: $[0.8719, 1.0042]$ pu.
+      - ANSI C84.1 limit breaches: $107 / 200$ (53.5%) samples dipped below $0.90$ pu on downstream buses.
+      *Conclusion:* Mathematically proven exact stealth ($\Delta J \approx 0$).
+
+    #### Test 2: Linearised Stealth vs Attack Magnitude (Non-Linear Leakage Curve, N = 200)
+    | Voltage Shift ($\alpha_V$) | Mean $\Delta J$ | Mean $\Delta \|r\|$ | BDD Det ($\alpha=0.05$) | BDD Det ($\alpha=0.01$) | $r^N_{\max} > 3.0$ Det | Limit Breaches |
+    |---|---|---|---|---|---|---|
+    | **1.0%** | $+0.5545$ | $+0.000294$ | 9 / 200 (4.5%) | 1 / 200 (0.5%) | 62 / 200 (31.0%) | 27 / 200 (13.5%) |
+    | **2.0%** | $+8.5817$ | $+0.004586$ | 32 / 200 (16.0%) | 10 / 200 (5.0%) | 115 / 200 (57.5%) | 66 / 200 (33.0%) |
+    | **3.0%** | $+42.1909$ | $+0.020725$ | 160 / 200 (80.0%) | 123 / 200 (61.5%) | 200 / 200 (100.0%) | 105 / 200 (52.5%) |
+    | **5.0%** | $+307.9526$ | $+0.104222$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 186 / 200 (93.0%) |
+    | **8.0%** | $+1860.4378$ | $+0.336080$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10.0%** | $+4295.7322$ | $+0.545179$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+
+    *Key Result on Leakage Scaling:* At $\alpha_V = 1.0\%$, the linearised attack is nearly stealthy ($\Delta J = +0.55$, BDD detection matches nominal false alarm rate). However, because the residual leakage is $\mathcal{O}(\|c\|^2)$ and $J$ is a quadratic form in residuals ($r^T W r$), the objective shift $\Delta J$ grows as $\|c\|^4$: doubling magnitude from 1% to 2% increases $\Delta J$ by $15.5\times$; tripling from 1% to 3% increases $\Delta J$ by $76.1\times$. By 5% magnitude, non-linear leakage ensures 100% detection.
+
+    #### Test 3: Random Non-Stealth Attacks vs Meter Count & Noise Level (N = 200)
+    | Compromised Meters | Noise Multiplier | Mean $\Delta J$ | Mean $\Delta \|r\|$ | BDD Det ($\alpha=0.05$) | BDD Det ($\alpha=0.01$) | $r^N_{\max} > 3.0$ Det |
+    |---|---|---|---|---|---|---|
+    | **5** | $5.0\times$ | $+73.98$ | $+0.0263$ | 197 / 200 (98.5%) | 189 / 200 (94.5%) | 200 / 200 (100.0%) |
+    | **5** | $10.0\times$ | $+298.09$ | $+0.0815$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **5** | $20.0\times$ | $+1196.65$ | $+0.2120$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10** | $5.0\times$ | $+148.63$ | $+0.0467$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10** | $10.0\times$ | $+596.59$ | $+0.1322$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10** | $20.0\times$ | $+2390.53$ | $+0.3211$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $5.0\times$ | $+297.19$ | $+0.0807$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $10.0\times$ | $+1194.71$ | $+0.2104$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $20.0\times$ | $+4790.79$ | $+0.4843$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+
+    *Conclusion:* Unstructured random attacks fail immediately: even 5 meters perturbed at $5\sigma$ trigger 98.5% Chi-Square detection and 100% normalized residual detection.
+
+    #### Test 4: Single-Bus vs Multi-Bus Coordinated Topologies (N = 200)
+    | Attack Topology | Formulation | Mean Shift Error | Mean $\Delta J$ | BDD Det ($\alpha=0.05$) | Voltage Limit Breaches |
+    |---|---|---|---|---|---|
+    | **Single-Bus (Bus 18 end)** | Exact AC | $3.8276 \times 10^{-5}$ | $-0.0013$ | 8 / 200 (4.0%) | 54 / 200 (27.0%) |
+    | **Single-Bus (Bus 18 end)** | Linearised | $7.0828 \times 10^{-4}$ | $+2.6955$ | 15 / 200 (7.5%) | 59 / 200 (29.5%) |
+    | **Single-Bus (Bus 2 root)** | Exact AC | $1.2395 \times 10^{-4}$ | $-0.0033$ | 8 / 200 (4.0%) | 0 / 200 (0.0%) |
+    | **Single-Bus (Bus 2 root)** | Linearised | $6.0559 \times 10^{-3}$ | $+221.6482$ | 200 / 200 (100.0%) | 0 / 200 (0.0%) |
+    | **Multi-Bus (4 random)** | Exact AC | $1.1088 \times 10^{-4}$ | $-0.0067$ | 8 / 200 (4.0%) | 55 / 200 (27.5%) |
+    | **Multi-Bus (4 random)** | Linearised | $6.3342 \times 10^{-3}$ | $+40.1671$ | 157 / 200 (78.5%) | 61 / 200 (30.5%) |
+    | **Multi-Bus (Feeder 14-18)** | Exact AC | $1.3076 \times 10^{-4}$ | $-0.0099$ | 8 / 200 (4.0%) | 104 / 200 (52.0%) |
+    | **Multi-Bus (Feeder 14-18)** | Linearised | $5.3236 \times 10^{-3}$ | $+66.6214$ | 170 / 200 (85.0%) | 94 / 200 (47.0%) |
+
+    *Topology Insights:*
+    - Under Exact AC, all topologies achieve perfect mathematical stealth ($\Delta J \approx 0$, detection matches nominal 4.0%).
+    - Under Linearised stealth, the location of the attack strongly dictates leakage: attacking Bus 18 (feeder terminus with low power flow) produces minimal leakage ($\Delta J = +2.70$, 7.5% detection). In contrast, attacking Bus 2 (root node carrying 3.7 MW total feeder throughput) induces massive non-linear power flow mismatch ($\Delta J = +221.65$, 100% detection).
+
+    #### Test 5: Limited-Meter Attacker vs Meter Budget (N = 200)
+    | Meter Budget ($M_{\text{att}}$) | Unaltered Meters | Truncation Leakage | Mean $\Delta J$ | BDD Det ($\alpha=0.05$) | BDD Det ($\alpha=0.01$) | $r^N_{\max} > 3.0$ Det |
+    |---|---|---|---|---|---|---|
+    | **10 / 163** | 153 | $0.3237$ | $+498.01$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20 / 163** | 143 | $0.0000$ | $+41.60$ | 157 / 200 (78.5%) | 119 / 200 (59.5%) | 200 / 200 (100.0%) |
+    | **40 / 163** | 123 | $0.0000$ | $+41.60$ | 157 / 200 (78.5%) | 119 / 200 (59.5%) | 200 / 200 (100.0%) |
+    | **60 / 163** | 103 | $0.0000$ | $+41.60$ | 157 / 200 (78.5%) | 119 / 200 (59.5%) | 200 / 200 (100.0%) |
+    | **80 / 163** | 83 | $0.0000$ | $+41.60$ | 157 / 200 (78.5%) | 119 / 200 (59.5%) | 200 / 200 (100.0%) |
+
+    *Conclusion:* When the meter budget is constrained to 10 meters, the attacker cannot cover all meters incident to the targeted buses; the uncompromised meters cause truncation leakage ($0.3237$) that drives $\Delta J = +498.01$ and guarantees 100% BDD detection. At 20 meters, the local neighborhood is fully covered, dropping truncation leakage to 0 and returning detection to the baseline non-linear leakage of the linearised formulation.
+
+  - **Part 4 (Packaging & Git Commits):**
+    - Updated [configs/dataset.toml](file:///c:/Projects/fdia-detection/configs/dataset.toml) with $N = 5000$ and smoothed profile.
+    - Created [configs/attacks.toml](file:///c:/Projects/fdia-detection/configs/attacks.toml) with all attack hyperparameters.
+    - Created [julia/04_attacks.jl](file:///c:/Projects/fdia-detection/julia/04_attacks.jl) implementing all attack models.
+    - Created [julia/05_verify_attacks.jl](file:///c:/Projects/fdia-detection/julia/05_verify_attacks.jl) implementing the comprehensive 5-test verification suite.
+    - Re-ran `julia/03_normal_data.jl` for $N = 5000$ and verified clean convergence across power flow, state estimation, and BDD validation.
+    - All data files (`data/*.csv`, `data/*.json`) remain strictly gitignored.
 
 

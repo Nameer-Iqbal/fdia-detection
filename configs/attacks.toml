@@ -1,0 +1,43 @@
+# ==============================================================================
+# Configuration for False Data Injection (FDI) Attacks (Task 5)
+# System: IEEE 33-Bus System (163 Measurements, 65 States)
+# ==============================================================================
+
+[general]
+seed = 42
+voltage_limit_min = 0.90    # ANSI C84.1 physical feasibility bounds
+voltage_limit_max = 1.05
+
+[attack_magnitude]
+# Relative state perturbation scales (fraction of nominal / radians)
+voltage_magnitude_min = 0.01  # 1% shift
+voltage_magnitude_max = 0.10  # 10% shift
+voltage_angle_min = 0.005     # 0.005 rad (~0.29 deg)
+voltage_angle_max = 0.050     # 0.050 rad (~2.86 deg)
+magnitude_levels = [0.01, 0.02, 0.03, 0.05, 0.08, 0.10]
+
+[random_attack]
+meter_counts = [5, 10, 20]
+noise_std_multipliers = [5.0, 10.0, 20.0]
+
+[single_bus_attack]
+candidate_buses = [2, 10, 18, 25, 33]
+perturb_angle = true
+perturb_magnitude = true
+
+[multibus_random_attack]
+num_target_buses = 4
+
+[multibus_adjacent_attack]
+# Feeder corridors along IEEE 33-bus topology:
+# - Main feeder corridor: Buses 2, 3, 4, 5, 6
+# - Lateral branch: Buses 14, 15, 16, 17, 18
+# - Branch 2: Buses 26, 27, 28, 29, 30
+feeder_clusters = [
+    [2, 3, 4, 5],
+    [14, 15, 16, 17, 18],
+    [26, 27, 28, 29, 30]
+]
+
+[limited_meter_attack]
+meter_budgets = [10, 20, 40, 60, 80]

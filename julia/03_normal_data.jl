@@ -69,16 +69,17 @@ function main()
     end
 
     master_seed = cfg["dataset"]["master_seed"]
-    N_samples = cfg["dataset"]["num_samples"]
+    use_dev_size = get(cfg["dataset"], "use_dev_size", false)
+    N_samples = use_dev_size ? cfg["dataset"]["num_dev_samples"] : cfg["dataset"]["num_samples"]
     samples_per_day = cfg["dataset"]["samples_per_day"]
 
     lf_min = cfg["operating_point"]["load_factor_min"]
     lf_max = cfg["operating_point"]["load_factor_max"]
     bus_noise_std = cfg["operating_point"]["per_bus_noise_std"]
 
-    peak_hour = cfg["daily_profile"]["peak_hour"]
-    c1 = cfg["daily_profile"]["c1"]
-    c2 = cfg["daily_profile"]["c2"]
+    peak_hour = get(cfg["daily_profile"], "peak_hour", 20.0)
+    trough_hour = get(cfg["daily_profile"], "trough_hour", 8.0)
+    smoothness = get(cfg["daily_profile"], "smoothness", 0.96)
 
     max_se_iters = cfg["state_estimation"]["max_iterations"]
     se_tol = cfg["state_estimation"]["tolerance"]
@@ -91,7 +92,7 @@ function main()
     p_flow_sigma = cfg["noise"]["power_flow_active_std"]
     q_flow_sigma = cfg["noise"]["power_flow_reactive_std"]
 
-    out_csv_rel = cfg["output"]["dataset_file"]
+    out_csv_rel = use_dev_size ? cfg["output"]["dev_dataset_file"] : cfg["output"]["dataset_file"]
     out_meta_rel = cfg["output"]["metadata_file"]
     out_jac_rel = cfg["output"]["jacobian_file"]
 
@@ -103,7 +104,7 @@ function main()
 
     println("Config loaded from:             ", config_path)
     println("Config SHA256:                  ", config_hash)
-    println("Dataset samples configured (N): ", N_samples)
+    println("Dataset samples configured (N): ", N_samples, use_dev_size ? " (DEV MODE)" : " (FULL PRODUCTION)")
     println("Master random seed:             ", master_seed)
     println("Load factor range:              [", lf_min, ", ", lf_max, "]")
     println("Per-bus load noise std:         ", bus_noise_std * 100, "% (constant power factor)")
@@ -161,17 +162,26 @@ function main()
     # -------------------------------------------------------------------------
     rng = MersenneTwister(master_seed)
 
-    # Diurnal profile helper function
-    # Evaluates harmonic profile and maps min-to-max linearly to [lf_min, lf_max]
+    # Diurnal profile helper function:
+    # Continuous, smooth smoothed-triangle profile mapping cleanly across [lf_min, lf_max]
+    # Peak at 20:00, trough at 08:00 without flat floor clipping
     function compute_diurnal_load_factor(t_idx)
         hour = mod((t_idx - 1) * (24.0 / samples_per_day), 24.0)
-        raw_val = c1 * cos(2pi * (hour - peak_hour) / 24.0) + c2 * cos(4pi * (hour - peak_hour) / 24.0)
-        # Fundamental + 2nd harmonic: max is at hour = peak_hour (c1 + c2 = 0.70)
-        # min is at hour ~ peak_hour - 15 = 5.0 (raw_val ~ -0.35355)
-        raw_min = -0.35355339
-        raw_max = 0.70
-        norm_val = clamp((raw_val - raw_min) / (raw_max - raw_min), 0.0, 1.0)
+        theta = 2pi * (hour - 14.0) / 24.0
+        raw_val = asin(smoothness * sin(theta))
+        norm_val = (raw_val + asin(smoothness)) / (2.0 * asin(smoothness))
         return lf_min + norm_val * (lf_max - lf_min)
+    end
+
+    # Print 5-bin histogram for N = 200 (Part 0 validation)
+    println("\n--- Load Factor 5-Bin Histogram for N = 200 (Profile Validation) ---")
+    dev_lfs = [compute_diurnal_load_factor(t) for t in 1:200]
+    bin_edges_200 = range(lf_min, lf_max, length = 6)
+    for b in 1:5
+        b_low = bin_edges_200[b]
+        b_high = bin_edges_200[b+1]
+        c = count(x -> (b == 5 ? (x >= b_low && x <= b_high) : (x >= b_low && x < b_high)), dev_lfs)
+        @printf("  Bin %d [%.3f - %.3f]: %3d / 200 (%5.1f%%)\n", b, b_low, b_high, c, (c / 200) * 100)
     end
 
     # Pre-allocate result containers
