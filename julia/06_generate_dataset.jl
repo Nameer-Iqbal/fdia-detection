@@ -181,6 +181,7 @@ function main()
     attack_type_cols = Vector{String}(undef, total_rows)
     family_cols = Vector{String}(undef, total_rows)
     magnitudes = zeros(Float64, total_rows)
+    shift_ratios = zeros(Float64, total_rows)
     signs = zeros(Int, total_rows)
     n_att_meters = zeros(Int, total_rows)
     att_buses_strs = Vector{String}(undef, total_rows)
@@ -246,6 +247,7 @@ function main()
         attack_type_cols[row_ptr] = "none"
         family_cols[row_ptr] = "none"
         magnitudes[row_ptr] = 0.0
+        shift_ratios[row_ptr] = 0.0
         signs[row_ptr] = 0
         n_att_meters[row_ptr] = 0
         att_buses_strs[row_ptr] = "[]"
@@ -348,6 +350,13 @@ function main()
         attack_type_cols[row_ptr] = att_type
         family_cols[row_ptr] = fam_str
         magnitudes[row_ptr] = Float64(att_res.metadata["magnitude"])
+        if haskey(att_res.metadata, "shift_ratio")
+            shift_ratios[row_ptr] = Float64(att_res.metadata["shift_ratio"])
+        elseif att_type == "random"
+            shift_ratios[row_ptr] = 0.0
+        else
+            shift_ratios[row_ptr] = 1.0
+        end
         signs[row_ptr] = Int(att_res.metadata["sign"])
         n_att_meters[row_ptr] = Int(att_res.metadata["n_attacked_meters"])
         att_buses_strs[row_ptr] = string(att_res.metadata["attacked_buses"])
@@ -386,6 +395,7 @@ function main()
         attack_type = attack_type_cols,
         family = family_cols,
         magnitude = magnitudes,
+        shift_ratio = shift_ratios,
         sign = signs,
         n_attacked_meters = n_att_meters,
         attacked_buses = att_buses_strs,
@@ -443,6 +453,7 @@ function main()
         "attack_type",
         "family",
         "magnitude",
+        "shift_ratio",
         "sign",
         "n_attacked_meters",
         "attacked_buses",

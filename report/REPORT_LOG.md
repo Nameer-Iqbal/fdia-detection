@@ -572,8 +572,37 @@
       - **Unconstrained Family ($N = 2,920$):** Range-Check flags **833 / 2920 (28.53%)**.
     - **Label Leakage Prevention & Excluded Columns:**
       To prevent synthetic data artifacts from leaking the label to downstream ML models, all metadata columns are explicitly cataloged in `data/attacks_meta.json` and must be excluded from feature matrices during training:
-      - Excluded columns: `label`, `attack_type`, `family`, `magnitude`, `sign`, `n_attacked_meters`, `attacked_buses`, `mask_1..163`, `c_1..65`, and `x_true_1..65`.
+      - Excluded columns: `label`, `attack_type`, `family`, `magnitude`, `shift_ratio`, `sign`, `n_attacked_meters`, `attacked_buses`, `mask_1..163`, `c_1..65`, and `x_true_1..65`.
       - On normal rows, `c_1..65` and `mask_1..163` are filled with zeros, while `x_true_1..65` stores the true physical operating point state for both normal and attacked rows, ensuring zero NaNs or missing values exist in the entire dataset.
 
-
-
+  - **Part 6 (Pre-Task-7 Integrity & Parameter Distribution Verification):**
+    - **Attack Family Sign and Magnitude Distributions ($N = 5,000$ attacked rows):**
+      - **Family `in_range` ($N = 2,080$):**
+        - Sign counts: `-1`: 1,328 (63.85%), `+1`: 752 (36.15%), `0`: 0.
+        - Voltage-shift magnitude: Min = $0.010037$ pu ($1.00\%$), Median = $0.029862$ pu ($2.99\%$), Max = $0.049935$ pu ($4.99\%$).
+      - **Family `unconstrained` ($N = 2,920$):**
+        - Sign counts: `-1`: 1,095 (37.50%), `+1`: 1,019 (34.90%), `0`: 806 (27.60%, unstructured random attacks).
+        - For directional state-shift attacks ($N = 2,114$): `-1`: 1,095 (51.80%), `+1`: 1,019 (48.20%)—balanced around 50/50.
+        - State-shift voltage magnitude: Min = $0.010009$ pu ($1.00\%$), Median = $0.030140$ pu ($3.01\%$), Max = $0.049994$ pu ($5.00\%$).
+    - **Limited-Meter Regularization Parameter $\lambda$:**
+      - Configured value: $\lambda = 10^5$ (`100000.0`).
+      - Configuration path: [configs/dataset_attacks.toml](file:///c:/Projects/fdia-detection/configs/dataset_attacks.toml) under `[parameters]` (`limited_meter_lambda = 1e5`).
+      - Matches the precision matrix scale $W \sim 1.56 \times 10^4$ and balances leakage penalty against shift distortion.
+    - **Metadata JSON Python Load Verification:**
+      - Loaded `data/attacks_meta.json` using `.venv\Scripts\python.exe` with standard library `json.load()`.
+      - Successfully verified: 10,000 total rows, 700 columns, 301 excluded metadata columns, SHA-256 config hashes, and version descriptors.
+    - **Achieved Shift Ratio Column & Distribution (`limited_meter` rows, $N = 833$):**
+      - Added explicit column `shift_ratio` to `data/attacks_full.csv` (column 10, 700 columns total) and to the training exclusion list.
+      - Distribution across all 833 `limited_meter` rows:
+        - Min: **$0.000000$**
+        - Median: **$0.173377$**
+        - Max: **$1.275261$**
+        - Mean: **$0.289440$**
+        - Std: **$0.283503$**
+      - Breakdown by meter budget $M$:
+        - $M = 10$ ($N = 129$): Min = $0.0000$, Median = $0.0100$, Max = $0.3650$
+        - $M = 20$ ($N = 132$): Min = $0.0000$, Median = $0.0375$, Max = $0.2592$
+        - $M = 40$ ($N = 146$): Min = $0.0002$, Median = $0.1069$, Max = $1.1544$
+        - $M = 60$ ($N = 130$): Min = $0.0227$, Median = $0.2707$, Max = $1.1331$
+        - $M = 80$ ($N = 146$): Min = $0.0643$, Median = $0.4598$, Max = $1.2753$
+        - $M = 120$ ($N = 150$): Min = $0.2519$, Median = $0.6803$, Max = $1.0934$
