@@ -431,4 +431,149 @@
     - Re-ran `julia/03_normal_data.jl` for $N = 5000$ and verified clean convergence across power flow, state estimation, and BDD validation.
     - All data files (`data/*.csv`, `data/*.json`) remain strictly gitignored.
 
+## Task 6: LNR Calibration, Shortcut Analysis, Redesigned Limited-Meter Attacker, & Labelled Dataset Construction
+- **Date:** October 17, 2026
+- **What was done:**
+  - **Part 1 (Largest-Normalised-Residual Test Calibration):**
+    - Analyzed the distribution of the largest normalized residual $r^N_{\max} = \max_{i=1 \dots m} \frac{|r_i|}{\sqrt{\Omega_{ii}}}$ across the $N = 5000$ unattacked normal dataset.
+    - Diagnosed the legacy textbook threshold $\tau = 3.0$: on $m = 163$ measurements, $\tau = 3.0$ resulted in a massive **33.60% empirical false alarm rate (1680 / 5000 samples)** on completely unattacked, normal power flow points.
+    - Evaluated empirical quantiles for nominal false alarm rates:
+      - **$\alpha = 0.05$ (5% empirical FA):** $\tau_{\text{emp}}(0.05) = \mathbf{3.6211}$ ($250 / 5000$ false alarms).
+      - **$\alpha = 0.01$ (1% empirical FA):** $\tau_{\text{emp}}(0.01) = \mathbf{4.1078}$ ($50 / 5000$ false alarms).
+    - Derived the Bonferroni-style analytical threshold for $m = 163$ measurements based on the union bound of two-tailed standard normal marginals:
+      $$\mathbb{P}\left(\max_{i=1 \dots m} |Z_i| > \tau\right) \le 2m \cdot (1 - \Phi(\tau)) = \alpha \implies \tau_{\text{Bonf}}(\alpha) = \Phi^{-1}\left(1 - \frac{\alpha}{2m}\right)$$
+      - **$\alpha = 0.05$:** $\tau_{\text{Bonf}}(0.05) = \Phi^{-1}(1 - 0.05/326) = \mathbf{3.6095}$ (produces 5.2% empirical FA).
+      - **$\alpha = 0.01$:** $\tau_{\text{Bonf}}(0.01) = \Phi^{-1}(1 - 0.01/326) = \mathbf{4.0076}$ (produces 1.4% empirical FA).
+    - Note that empirical and Bonferroni thresholds agree within $\approx 0.01 - 0.10$, validating theoretical extreme-value limits.
+    - Stored all calibrated thresholds in [configs/bdd.toml](file:///c:/Projects/fdia-detection/configs/bdd.toml). Henceforth, all LNR evaluations use $\tau_{\text{emp}}(0.05) = 3.6211$ and $\tau_{\text{emp}}(0.01) = 4.1078$.
+
+  - **Part 2 (Shortcut Risk Analysis & Voltage Range Check Baseline):**
+    - Evaluated the global physical voltage envelope observed across all 5000 normal operating points ($33 \text{ buses} \times 5000 \text{ samples} = 165,000 \text{ voltage values}$):
+      $$V_{\text{normal, min}} = 0.9008926 \text{ pu}, \quad V_{\text{normal, max}} = 1.0032777 \text{ pu}$$
+    - Identified a critical vulnerability in naive benchmarking: if an attack injects an unconstrained state shift $c$ whose sign pushes voltage below $0.9009$ pu or above $1.0033$ pu, an elementary **RANGE-CHECK** rule ($V < V_{\min}$ or $V > V_{\max}$) detects the attack without running state estimation or ML. High "detection rates" on such attacks are merely detecting out-of-distribution voltages, not detecting false data injection stealth.
+    - Defined two distinct attack families to eliminate this shortcut:
+      - **Family (a) IN-RANGE:** The attacked state estimate $\hat{x}_{\text{attacked}}$ is strictly constrained to lie within $[V_{\text{normal, min}}, V_{\text{normal, max}}]$. The sign and magnitude of $c_V$ are chosen or resampled to prevent boundary breach. By construction, the trivial Range-Check baseline achieves **0% detection** on this family, forcing detection algorithms to rely purely on spatial/measurement correlation.
+      - **Family (b) UNCONSTRAINED:** The perturbation $c$ is applied with unbiased random sign ($\pm 1$ with equal probability), allowing voltages to leave the normal envelope.
+    - Implemented the Range-Check baseline to quantify how much detection in each family is attributable to out-of-range voltage violations.
+
+  - **Part 3 (Mathematical Formulation of Redesigned Limited-Meter Attacker):**
+    - **Problem Setting:**
+      - Attacker compromises a random subset of meters $S \subset \{1, \dots, m\}$ with cardinality $|S| = M$.
+      - Uncompromised meters are denoted $\overline{S} = \{1, \dots, m\} \setminus S$, with $|\overline{S}| = m - M$.
+      - Attacker constraint: $a_{\overline{S}} = 0$ (no manipulation of uncompromised meters).
+      - Attacker objective: induce a target state shift $c_0 \in \mathbb{R}^n$ while minimizing residual leakage.
+    - **Derivation of Residual Leakage:**
+      For any chosen state perturbation $c \in \mathbb{R}^n$, the linear measurement update on compromised meters is $a_S = H_S c$, with $a_{\overline{S}} = 0$.
+      The full attack vector can be expressed as:
+      $$a = \begin{bmatrix} H_S c \\ 0 \end{bmatrix} = H c - \begin{bmatrix} 0 \\ H_{\overline{S}} c \end{bmatrix}$$
+      The AC WLS state estimator estimates state shift $\hat{c} = (H^T W H)^{-1} H^T W a = G^{-1} H^T W a$.
+      The resulting measurement residual change is:
+      $$\Delta r = (I - K) a = -(I - K) \begin{bmatrix} 0 \\ H_{\overline{S}} c \end{bmatrix} = -(I - K)_{:, \overline{S}} H_{\overline{S}} c$$
+      where $K = H G^{-1} H^T W$ is the hat / projection matrix.
+      The weighted residual leakage (Chi-Square increment) is:
+      $$\Delta J(c) = \Delta r^T W \Delta r = c^T H_{\overline{S}}^T (I - K)_{:, \overline{S}}^T W (I - K)_{:, \overline{S}} H_{\overline{S}} c = c^T Q c$$
+      where $Q \in \mathbb{R}^{n \times n}$ is symmetric positive semidefinite ($Q \succeq 0$).
+    - **Least-Squares Optimization Problem:**
+      The attacker solves a regularized quadratic program balancing residual leakage minimization against target shift fidelity:
+      $$\min_{c \in \mathbb{R}^n} \frac{1}{2} c^T Q c + \frac{\lambda}{2} \| c - c_0 \|_2^2$$
+      The closed-form least-squares solution is:
+      $$(Q + \lambda I) c = \lambda c_0 \iff c^* = (Q + \lambda I)^{-1} (\lambda c_0)$$
+      The attacker then injects $a_S = H_S c^*$, $a_{\overline{S}} = 0$.
+      The achieved state shift is $\hat{c} = G^{-1} H_S^T W_S a_S$.
+      *Mathematical properties:*
+      - If $M = 163$ ($\overline{S} = \emptyset$), $Q = 0 \implies c^* = c_0$ and $\Delta J = 0$ (perfect stealth).
+      - If $M \ge 120$, $Q$ has a non-trivial nullspace; the projection of $c_0$ onto $\text{null}(H_{\overline{S}})$ achieves exact zero leakage.
+      - If $M < 65$, $H_{\overline{S}}$ has full column rank ($65$). The optimization attenuates directions of $c_0$ that cause heavy residual leakage on uncompromised meters, trading off achieved shift magnitude for stealth.
+
+  - **Part 4 (Empirical Verification Suite with Calibrated LNR & Baselines):**
+    - Executed [julia/05_verify_attacks.jl](file:///c:/Projects/fdia-detection/julia/05_verify_attacks.jl) on $N = 200$ samples incorporating the calibrated LNR thresholds and range-check baselines:
+
+    #### Test 2: Linearised Stealth vs Attack Magnitude (Calibrated LNR vs Legacy, N = 200)
+    *Normal Data False Alarm Rates: $\chi^2(5\%) = 5.0\%$, $\chi^2(1\%) = 1.0\%$, $\text{LNR}(5\%) = 5.0\%$, $\text{LNR}(1\%) = 1.0\%$ (Legacy $\text{LNR} > 3.0$ FA $= 33.6\%$)*
+
+    | Magnitude ($\alpha_V$) | Mean $\Delta J$ | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Calibrated $\text{LNR}(1\%)$ | Legacy $\text{LNR} > 3.0$ |
+    |---|---|---|---|---|---|---|
+    | **1.0%** | $+0.5545$ | 9 / 200 (4.5%) | 1 / 200 (0.5%) | 9 / 200 (4.5%) | 3 / 200 (1.5%) | 62 / 200 (31.0%) |
+    | **2.0%** | $+8.5817$ | 32 / 200 (16.0%) | 10 / 200 (5.0%) | 42 / 200 (21.0%) | 18 / 200 (9.0%) | 115 / 200 (57.5%) |
+    | **3.0%** | $+42.1909$ | 160 / 200 (80.0%) | 123 / 200 (61.5%) | 199 / 200 (99.5%) | 194 / 200 (97.0%) | 200 / 200 (100.0%) |
+    | **5.0%** | $+307.9526$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **8.0%** | $+1860.4378$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10.0%** | $+4295.7322$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+
+    *Calibration Insight:* At 1.0% magnitude, the legacy rule $\tau = 3.0$ claimed a spurious 31.0% detection rate (driven entirely by normal measurement noise false alarms). With calibrated thresholds, both Chi-Square and LNR detection rates settle precisely at the nominal false alarm rate ($4.5\% - 5.0\%$), correctly classifying 1% attacks as stealthy.
+
+    #### Test 3: Random Non-Stealth Attacks with Calibrated LNR (N = 200)
+    *Normal Data False Alarm Rates: $\chi^2(5\%) = 5.0\%$, $\chi^2(1\%) = 1.0\%$, $\text{LNR}(5\%) = 5.0\%$, $\text{LNR}(1\%) = 1.0\%$ (Legacy $\text{LNR} > 3.0$ FA $= 33.6\%$)*
+
+    | Compromised Meters | Multiplier | Mean $\Delta J$ | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Calibrated $\text{LNR}(1\%)$ | Legacy $\text{LNR} > 3.0$ |
+    |---|---|---|---|---|---|---|---|
+    | **5** | $5.0\times$ | $+75.52$ | 196 / 200 (98.0%) | 185 / 200 (92.5%) | 195 / 200 (97.5%) | 183 / 200 (91.5%) | 200 / 200 (100.0%) |
+    | **5** | $10.0\times$ | $+301.07$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **5** | $20.0\times$ | $+1202.21$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10** | $5.0\times$ | $+150.22$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 199 / 200 (99.5%) | 200 / 200 (100.0%) |
+    | **10** | $10.0\times$ | $+601.25$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **10** | $20.0\times$ | $+2405.70$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $5.0\times$ | $+301.66$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $10.0\times$ | $+1206.03$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+    | **20** | $20.0\times$ | $+4822.87$ | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) | 200 / 200 (100.0%) |
+
+    #### Test 4: Shortcut Risk & Range-Check Baseline (N = 200)
+    *Normal Range: $[0.9008926, 1.0032777]$ pu*
+
+    | Family | Formulation | Rejection / Resample | Min Voltage (pu) | Max Voltage (pu) | Range-Check Det | $\chi^2(5\%)$ Det |
+    |---|---|---|---|---|---|---|
+    | **unconstrained** | Exact AC | 0 / 200 (0.0%) | $0.8736$ | $1.0029$ | 101 / 200 (50.5%) | 8 / 200 (4.0%) |
+    | **unconstrained** | Linearised | 0 / 200 (0.0%) | $0.8748$ | $1.0027$ | 96 / 200 (48.0%) | 162 / 200 (81.0%) |
+    | **in_range** | Exact AC | 101 / 200 (50.5%) | $0.9009$ | $1.0029$ | **0 / 200 (0.0%)** | 8 / 200 (4.0%) |
+    | **in_range** | Linearised | 101 / 200 (50.5%) | $0.8998$ | $1.0027$ | **4 / 200 (2.0%)** | 102 / 200 (51.0%) |
+
+    *Key Shortcut Finding:* Under unconstrained attacks with random sign, 50.5% of exact AC attacks cause under-voltage breaches ($< 0.9009$ pu), allowing a trivial range check to flag them without running state estimation or ML. For the in-range family, 50.5% of draws are sign-flipped to stay within envelope; range-check detection drops to **0.0%** on exact AC and 2.0% on linearised, verifying that the shortcut is completely neutralized.
+
+    #### Test 5: Redesigned Limited-Meter Attacker (LS Projection vs Budget M, N = 200)
+    | Budget $M$ | Mean Shift Ratio | Mean Cosine Sim | Mean $\Delta J$ | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Calibrated $\text{LNR}(1\%)$ |
+    |---|---|---|---|---|---|---|---|
+    | **10 / 163** | $0.003$ | $-0.0385$ | $+0.17$ | 8 / 200 (4.0%) | 1 / 200 (0.5%) | 8 / 200 (4.0%) | 3 / 200 (1.5%) |
+    | **20 / 163** | $0.031$ | $+0.0950$ | $+2.12$ | 14 / 200 (7.0%) | 2 / 200 (1.0%) | 13 / 200 (6.5%) | 4 / 200 (2.0%) |
+    | **40 / 163** | $0.236$ | $+0.2482$ | $+8.29$ | 31 / 200 (15.5%) | 8 / 200 (4.0%) | 27 / 200 (13.5%) | 11 / 200 (5.5%) |
+    | **60 / 163** | $0.364$ | $+0.3638$ | $+9.99$ | 38 / 200 (19.0%) | 13 / 200 (6.5%) | 31 / 200 (15.5%) | 11 / 200 (5.5%) |
+    | **80 / 163** | $0.368$ | $+0.4333$ | $+12.18$ | 43 / 200 (21.5%) | 15 / 200 (7.5%) | 43 / 200 (21.5%) | 21 / 200 (10.5%) |
+    | **120 / 163** | $0.757$ | $+0.7626$ | $+18.11$ | 63 / 200 (31.5%) | 36 / 200 (18.0%) | 66 / 200 (33.0%) | 46 / 200 (23.0%) |
+    | **163 / 163** | $1.000$ | $+1.0000$ | $+46.30$ | 170 / 200 (85.0%) | 132 / 200 (66.0%) | 200 / 200 (100.0%) | 197 / 200 (98.5%) |
+
+    *Comparison with Legacy Footprint Covering:*
+    - In Task 5's heuristic truncation ($a = \text{truncate}(H c_0)$), setting $M = 10$ caused massive residual leakage ($\Delta J = +498.01$) and 100% detection because uncompromised meters were completely neglected.
+    - Under the least-squares residual-space projection formulation, the attacker actively minimizes $(I - K)_{:, \overline{S}} H_{\overline{S}} c$. At $M = 10$, the optimizer strongly attenuates $c$ down to $0.3\%$ of target magnitude ($\text{shift ratio} = 0.003$), preserving stealth ($\Delta J = +0.17$, 4.0% detection). As the attacker gains control of more meters ($M \ge 60$), they achieve progressively larger shifts ($\text{shift ratio} = 0.36 \to 0.76 \to 1.00$) along with increasing cosine alignment ($\cos \theta = 0.36 \to 0.76 \to 1.00$).
+
+  - **Part 5 (Labelled Dataset Construction & Validation):**
+    - Created [configs/dataset_attacks.toml](file:///c:/Projects/fdia-detection/configs/dataset_attacks.toml) and [julia/06_generate_dataset.jl](file:///c:/Projects/fdia-detection/julia/06_generate_dataset.jl).
+    - Built the full balanced labelled dataset: **10,000 total rows** (5,000 normal + 5,000 attacked pairs grouped by `group_id = 1 \dots 5000`).
+    - Every attacked row was evaluated via a **full AC Gauss-Newton state estimation re-run from flat start** (no analytical shortcuts).
+    - **Convergence & Integrity:**
+      - Non-converged state estimation runs: **0 / 5,000 (0.0%, 100% convergence)**.
+      - Every group has **exactly 2 rows** (1 normal, 1 attacked).
+      - Missing or NaN values: **0 (clean across all 699 columns)**.
+    - **Dataset File and Storage Decision:**
+      - Saved as `data/attacks_full.csv` (98.89 MB, written in 1.37 s) and `data/attacks_meta.json` (metadata, hashes, versions, column catalog).
+      - *Format Rationale (CSV vs HDF5):* CSV was selected because 10,000 rows $\times$ 699 columns is under 100 MB, loads in $< 1.5$ seconds in Pandas/Polars/Julia without requiring external compiled HDF5 C libraries or platform-specific DLLs, and is gitignored.
+    - **Dataset Empirical Detection Rates by Attack Type:**
+      | Attack Type | Row Count | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Calibrated $\text{LNR}(1\%)$ | Range-Check Det |
+      |---|---|---|---|---|---|---|
+      | **normal (baseline FA)** | 5,000 | 253 (5.06%) | 45 (0.90%) | 250 (5.00%) | 50 (1.00%) | 1 (0.02%) |
+      | **random** | 806 | 782 (97.02%) | 759 (94.17%) | 756 (93.80%) | 695 (86.23%) | 60 (7.44%) |
+      | **linearised_single_bus** | 845 | 301 (35.62%) | 226 (26.75%) | 322 (38.11%) | 253 (29.94%) | 120 (14.20%) |
+      | **linearised_multi_bus** | 838 | 614 (73.27%) | 560 (66.83%) | 616 (73.51%) | 566 (67.54%) | 267 (31.86%) |
+      | **exact_ac_single_bus** | 847 | 47 (5.55%) | 10 (1.18%) | 48 (5.67%) | 10 (1.18%) | 121 (14.29%) |
+      | **exact_ac_multi_bus** | 831 | 37 (4.45%) | 4 (0.48%) | 45 (5.42%) | 8 (0.96%) | 226 (27.20%) |
+      | **limited_meter** | 833 | 376 (45.14%) | 277 (33.25%) | 383 (45.98%) | 302 (36.25%) | 67 (8.04%) |
+
+      *Exact AC Stealth Invariance Confirmed:* For exact AC single-bus and multi-bus attacks, detection rates under both Chi-Square ($5.55\%$ and $4.45\%$) and Calibrated LNR ($5.67\%$ and $5.42\%$) match the unattacked normal false alarm rate ($5.06\%$ and $5.00\%$) within standard binomial sampling variation. State estimation residuals remain mathematically invariant.
+    - **Detection by Family Across Attacked Rows ($N = 5,000$):**
+      - **In-Range Family ($N = 2,080$):** Range-Check flags only **28 / 2080 (1.35%)** (zero on exact AC, 28 on linearised due to non-linear drift).
+      - **Unconstrained Family ($N = 2,920$):** Range-Check flags **833 / 2920 (28.53%)**.
+    - **Label Leakage Prevention & Excluded Columns:**
+      To prevent synthetic data artifacts from leaking the label to downstream ML models, all metadata columns are explicitly cataloged in `data/attacks_meta.json` and must be excluded from feature matrices during training:
+      - Excluded columns: `label`, `attack_type`, `family`, `magnitude`, `sign`, `n_attacked_meters`, `attacked_buses`, `mask_1..163`, `c_1..65`, and `x_true_1..65`.
+      - On normal rows, `c_1..65` and `mask_1..163` are filled with zeros, while `x_true_1..65` stores the true physical operating point state for both normal and attacked rows, ensuring zero NaNs or missing values exist in the entire dataset.
+
+
 

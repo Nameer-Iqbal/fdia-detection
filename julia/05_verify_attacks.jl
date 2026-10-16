@@ -124,6 +124,22 @@ function main()
 
     rng = MersenneTwister(cfg["general"]["seed"])
 
+    # Load Calibrated BDD thresholds
+    bdd_cfg_path = normpath(joinpath(@__DIR__, "..", "configs", "bdd.toml"))
+    if !isfile(bdd_cfg_path)
+        error("BDD config file not found: $bdd_cfg_path")
+    end
+    bdd_cfg = TOML.parsefile(bdd_cfg_path)
+    
+    lnr_05 = bdd_cfg["largest_normalized_residual"]["empirical_threshold_05"]
+    lnr_01 = bdd_cfg["largest_normalized_residual"]["empirical_threshold_01"]
+    v_norm_min = bdd_cfg["range_check"]["voltage_min_normal"]
+    v_norm_max = bdd_cfg["range_check"]["voltage_max_normal"]
+
+    println("Calibrated LNR threshold (5% normal FA):  ", lnr_05)
+    println("Calibrated LNR threshold (1% normal FA):  ", lnr_01)
+    println("Normal Voltage Range:                     [", v_norm_min, ", ", v_norm_max, "] pu")
+
     # -------------------------------------------------------------------------
     # TEST 1: Exact AC Stealth Attack Verification
     # -------------------------------------------------------------------------
@@ -140,10 +156,9 @@ function main()
     max_V_att = Float64[]
     v_breach_count = 0
 
-    # Perturbation vector c: coordinated shift on Buses 10, 18, 25 (3% voltage shift, 0.015 rad angle shift)
     c_fixed = zeros(65)
     c_fixed[32 + 10] = 0.03  # +3% on Bus 10
-    c_fixed[9] = 0.015       # +0.015 rad (~0.86 deg) on Bus 10
+    c_fixed[9] = 0.015       # +0.015 rad on Bus 10
     c_fixed[32 + 18] = -0.03 # -3% on Bus 18
     c_fixed[17] = -0.015     # -0.015 rad on Bus 18
     c_fixed[32 + 25] = 0.02  # +2% on Bus 25
@@ -155,7 +170,6 @@ function main()
         J_0 = J_base_vec[t]
         r_norm_0 = r_norm_base[t]
 
-        # Generate Exact AC attack
         att = generate_exact_ac_attack(z_t, x_hat_t, se, c_fixed)
 
         # 1. Direct mathematical residual evaluation at x_hat + c
@@ -182,7 +196,7 @@ function main()
         push!(min_V_att, v_min_t)
         push!(max_V_att, v_max_t)
 
-        if v_min_t < 0.90 || v_max_t > 1.05
+        if v_min_t < v_norm_min || v_max_t > v_norm_max
             v_breach_count += 1
         end
     end
@@ -197,7 +211,7 @@ function main()
     @printf("  Mean State Shift Error ||x_att - x_hat - c||: %.6e\n", mean(shift_errors))
     @printf("Physical Sanity & Voltage Bounds Check:\n")
     @printf("  Attacked Voltage Range:          [%.4f, %.4f] pu\n", minimum(min_V_att), maximum(max_V_att))
-    @printf("  ANSI C84.1 Limit Breaches:       %d / %d (%.1f%%)\n", v_breach_count, N_test, (v_breach_count / N_test) * 100)
+    @printf("  Normal Voltage Envelope Breaches: %d / %d (%.1f%%)\n", v_breach_count, N_test, (v_breach_count / N_test) * 100)
 
     if maximum(direct_delta_J) > 1e-8
         error("ALERT: Exact AC stealth attack failed! Residuals or J changed significantly.")
@@ -206,27 +220,26 @@ function main()
     end
 
     # -------------------------------------------------------------------------
-    # TEST 2: Linearised Stealth vs Attack Magnitude (Leakage Curve)
+    # TEST 2: Linearised Stealth vs Attack Magnitude (with Calibrated LNR)
     # -------------------------------------------------------------------------
     println("\n================================================================================")
-    println("TEST 2: Linearised Stealth vs Attack Magnitude (Non-Linear Leakage Curve)")
+    println("TEST 2: Linearised Stealth vs Attack Magnitude (Calibrated LNR, N = $N_test)")
+    println("Normal Data False Alarm Rates: Chi2(5%)=5.0%, Chi2(1%)=1.0%, LNR(5%)=5.0%, LNR(1%)=1.0%")
     println("================================================================================")
-    println("Magnitude | Mean Delta J | Mean Delta ||r|| | FA (alpha=0.05) | FA (alpha=0.01) | rN_max > 3.0 | Limit Breaches")
-    println("----------|--------------|------------------|-----------------|-----------------|--------------|---------------")
+    println("Magnitude | Mean Delta J | Chi2(5%) Det | Chi2(1%) Det | LNR(5%) Det  | LNR(1%) Det  | Legacy LNR>3")
+    println("----------|--------------|--------------|--------------|--------------|--------------|-------------")
 
     mag_levels = cfg["attack_magnitude"]["magnitude_levels"]
 
     for mag in mag_levels
         d_J_list = Float64[]
-        d_r_list = Float64[]
-        fa05_cnt = 0
-        fa01_cnt = 0
-        rn_cnt = 0
-        breach_cnt = 0
+        chi05_cnt = 0
+        chi01_cnt = 0
+        lnr05_cnt = 0
+        lnr01_cnt = 0
+        rn3_cnt = 0
 
-        # Create state perturbation proportional to magnitude
         c_mag = zeros(65)
-        # Apply to Bus 10, 18, 25
         c_mag[32 + 10] = mag * 1.0
         c_mag[9] = (mag / 0.03) * 0.015
         c_mag[32 + 18] = -mag * 1.0
@@ -239,7 +252,6 @@ function main()
             x_hat_t = X_hat_base[t, :]
             H_t = H_base_list[t]
             J_0 = J_base_vec[t]
-            r_norm_0 = r_norm_base[t]
 
             att_lin = generate_linearised_attack(z_t, x_hat_t, H_t, c_mag)
 
@@ -248,44 +260,46 @@ function main()
             stateEstimation!(se; verbose = 0)
 
             J_att = se.method.objective
-            r_att = copy(se.method.residual)
-
             push!(d_J_list, J_att - J_0)
-            push!(d_r_list, norm(r_att) - r_norm_0)
 
             if J_att > chi_05
-                fa05_cnt += 1
+                chi05_cnt += 1
             end
             if J_att > chi_01
-                fa01_cnt += 1
+                chi01_cnt += 1
             end
 
             res_t = residualTest!(se; threshold = 1000.0)
-            if res_t.maxNormalizedResidual > 3.0
-                rn_cnt += 1
+            max_rn = res_t.maxNormalizedResidual
+            if max_rn > lnr_05
+                lnr05_cnt += 1
             end
-
-            if minimum(se.voltage.magnitude) < 0.90 || maximum(se.voltage.magnitude) > 1.05
-                breach_cnt += 1
+            if max_rn > lnr_01
+                lnr01_cnt += 1
+            end
+            if max_rn > 3.0
+                rn3_cnt += 1
             end
         end
 
-        @printf("  %4.1f%%   |  %+10.4f  |   %+12.6f   |  %3d/%3d (%4.1f%%) |  %3d/%3d (%4.1f%%) | %3d/%3d (%4.1f%%) |  %3d/%3d (%4.1f%%)\n",
-                mag * 100, mean(d_J_list), mean(d_r_list),
-                fa05_cnt, N_test, (fa05_cnt / N_test) * 100,
-                fa01_cnt, N_test, (fa01_cnt / N_test) * 100,
-                rn_cnt, N_test, (rn_cnt / N_test) * 100,
-                breach_cnt, N_test, (breach_cnt / N_test) * 100)
+        @printf("  %4.1f%%   |  %+10.4f  | %3d/%3d (%4.1f%%) | %3d/%3d (%4.1f%%) | %3d/%3d (%4.1f%%) | %3d/%3d (%4.1f%%) | %3d/%3d (%4.1f%%)\n",
+                mag * 100, mean(d_J_list),
+                chi05_cnt, N_test, (chi05_cnt / N_test) * 100,
+                chi01_cnt, N_test, (chi01_cnt / N_test) * 100,
+                lnr05_cnt, N_test, (lnr05_cnt / N_test) * 100,
+                lnr01_cnt, N_test, (lnr01_cnt / N_test) * 100,
+                rn3_cnt, N_test, (rn3_cnt / N_test) * 100)
     end
 
     # -------------------------------------------------------------------------
-    # TEST 3: Random Non-Stealth Attacks
+    # TEST 3: Random Non-Stealth Attacks (with Calibrated LNR)
     # -------------------------------------------------------------------------
     println("\n================================================================================")
-    println("TEST 3: Random (Non-Stealth) Attacks vs Compromised Meter Count & Noise Level")
+    println("TEST 3: Random (Non-Stealth) Attacks (Calibrated LNR, N = $N_test)")
+    println("Normal Data False Alarm Rates: Chi2(5%)=5.0%, Chi2(1%)=1.0%, LNR(5%)=5.0%, LNR(1%)=1.0%")
     println("================================================================================")
-    println("Meters | Multiplier | Mean Delta J | Mean Delta ||r|| | Det (a=0.05) | Det (a=0.01) | rN_max > 3.0")
-    println("-------|------------|--------------|------------------|--------------|--------------|-------------")
+    println("Meters | Multiplier | Mean Delta J | Chi2(5%) Det | Chi2(1%) Det | LNR(5%) Det  | LNR(1%) Det  | Legacy LNR>3")
+    println("-------|------------|--------------|--------------|--------------|--------------|--------------|-------------")
 
     meter_counts = cfg["random_attack"]["meter_counts"]
     noise_mults = cfg["random_attack"]["noise_std_multipliers"]
@@ -293,10 +307,11 @@ function main()
     for k_m in meter_counts
         for mult in noise_mults
             d_J_list = Float64[]
-            d_r_list = Float64[]
-            fa05_cnt = 0
-            fa01_cnt = 0
-            rn_cnt = 0
+            chi05_cnt = 0
+            chi01_cnt = 0
+            lnr05_cnt = 0
+            lnr01_cnt = 0
+            rn3_cnt = 0
 
             rng_rnd = MersenneTwister(42)
 
@@ -304,7 +319,6 @@ function main()
                 z_t = Z_base[t, :]
                 x_hat_t = X_hat_base[t, :]
                 J_0 = J_base_vec[t]
-                r_norm_0 = r_norm_base[t]
 
                 att_rnd = generate_random_attack(z_t, x_hat_t, std_vec, cfg;
                                                  rng = rng_rnd, k_meters = k_m, noise_mult = mult)
@@ -315,102 +329,126 @@ function main()
 
                 J_att = se.method.objective
                 push!(d_J_list, J_att - J_0)
-                push!(d_r_list, norm(se.method.residual) - r_norm_0)
 
                 if J_att > chi_05
-                    fa05_cnt += 1
+                    chi05_cnt += 1
                 end
                 if J_att > chi_01
-                    fa01_cnt += 1
+                    chi01_cnt += 1
                 end
 
                 res_t = residualTest!(se; threshold = 1000.0)
-                if res_t.maxNormalizedResidual > 3.0
-                    rn_cnt += 1
+                max_rn = res_t.maxNormalizedResidual
+                if max_rn > lnr_05
+                    lnr05_cnt += 1
+                end
+                if max_rn > lnr_01
+                    lnr01_cnt += 1
+                end
+                if max_rn > 3.0
+                    rn3_cnt += 1
                 end
             end
 
-            @printf("  %2d   |   %4.1fx    |  %+10.2f  |   %+12.4f   | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%)\n",
-                    k_m, mult, mean(d_J_list), mean(d_r_list),
-                    fa05_cnt, N_test, (fa05_cnt / N_test) * 100,
-                    fa01_cnt, N_test, (fa01_cnt / N_test) * 100,
-                    rn_cnt, N_test, (rn_cnt / N_test) * 100)
+            @printf("  %2d   |   %4.1fx    |  %+10.2f  | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%)\n",
+                    k_m, mult, mean(d_J_list),
+                    chi05_cnt, N_test, (chi05_cnt / N_test) * 100,
+                    chi01_cnt, N_test, (chi01_cnt / N_test) * 100,
+                    lnr05_cnt, N_test, (lnr05_cnt / N_test) * 100,
+                    lnr01_cnt, N_test, (lnr01_cnt / N_test) * 100,
+                    rn3_cnt, N_test, (rn3_cnt / N_test) * 100)
         end
     end
 
     # -------------------------------------------------------------------------
-    # TEST 4: Single-Bus vs Multi-Bus Topologies (Random vs Feeder Adjacent)
+    # TEST 4: Shortcut Risk & Range-Check Baseline: In-Range vs Unconstrained
     # -------------------------------------------------------------------------
     println("\n================================================================================")
-    println("TEST 4: Attack Topologies: Single-Bus vs Multi-Bus Coordinated (N = $N_test)")
+    println("TEST 4: Shortcut Risk Analysis & Range-Check Baseline (N = $N_test)")
+    println("Normal Range: [$v_norm_min, $v_norm_max] pu")
     println("================================================================================")
-    println("Attack Topology          | Formulation | Mean Shift Err | Mean Delta J | Det (a=0.05) | Limit Breaches")
-    println("-------------------------|-------------|----------------|--------------|--------------|---------------")
+    println("Attack Family    | Formulation | Rejection/Resample | Min V (pu) | Max V (pu) | Range Check Det | Chi2(5%) Det")
+    println("-----------------|-------------|--------------------|------------|------------|-----------------|-------------")
 
-    topologies = [
-        ("Single-Bus (Bus 18 end) ", [18]),
-        ("Single-Bus (Bus 2 root) ", [2]),
-        ("Multi-Bus (4 random)    ", [5, 12, 21, 30]),
-        ("Multi-Bus (Feeder 14-18)", [14, 15, 16, 17, 18])
-    ]
+    families = [:unconstrained, :in_range]
+    forms = [:exact_ac, :linearised]
 
-    for (topo_name, buses) in topologies
-        for form in [:exact_ac, :linearised]
-            shift_errs = Float64[]
-            d_Js = Float64[]
-            det_cnt = 0
-            breach_cnt = 0
+    for fam in families
+        for form in forms
+            rng_fam = MersenneTwister(123)
+            min_vs = Float64[]
+            max_vs = Float64[]
+            range_flags = 0
+            chi05_flags = 0
+            resample_flags = 0
 
             for t = 1:N_test
                 z_t = Z_base[t, :]
                 x_hat_t = X_hat_base[t, :]
                 H_t = H_base_list[t]
-                J_0 = J_base_vec[t]
 
                 att = generate_multibus_attack(z_t, x_hat_t, se, H_t, cfg;
-                                               target_buses = buses, alpha_V = 0.03, alpha_theta = 0.015,
-                                               formulation = form)
+                                               target_buses = [14, 15, 16, 17, 18],
+                                               alpha_V = 0.03, alpha_theta = 0.015,
+                                               formulation = form, family = fam,
+                                               rng = rng_fam)
+
+                if att.metadata["resampled"]
+                    resample_flags += 1
+                end
 
                 se.method.mean .= att.z_attacked
                 setInitialPoint!(se)
                 stateEstimation!(se; verbose = 0)
 
-                x_att = full_polar_to_state(se.voltage.magnitude, se.voltage.angle)
-                push!(shift_errs, norm((x_att .- x_hat_t) .- att.c))
-                push!(d_Js, se.method.objective - J_0)
+                v_min = minimum(se.voltage.magnitude)
+                v_max = maximum(se.voltage.magnitude)
+                push!(min_vs, v_min)
+                push!(max_vs, v_max)
 
-                if se.method.objective > chi_05
-                    det_cnt += 1
+                chk = check_voltage_range(se.voltage.magnitude; v_min = v_norm_min, v_max = v_norm_max)
+                if chk.breach
+                    range_flags += 1
                 end
-                if minimum(se.voltage.magnitude) < 0.90 || maximum(se.voltage.magnitude) > 1.05
-                    breach_cnt += 1
+                if se.method.objective > chi_05
+                    chi05_flags += 1
                 end
             end
 
-            @printf("%s | %-11s |    %.4e  |  %+10.4f  | %3d/%3d (%4.1f%%) |  %3d/%3d (%4.1f%%)\n",
-                    topo_name, string(form), mean(shift_errs), mean(d_Js),
-                    det_cnt, N_test, (det_cnt / N_test) * 100,
-                    breach_cnt, N_test, (breach_cnt / N_test) * 100)
+            @printf("%-16s | %-11s |    %3d/%3d (%4.1f%%)   |   %.4f   |   %.4f   |  %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%)\n",
+                    string(fam), string(form),
+                    resample_flags, N_test, (resample_flags / N_test) * 100,
+                    minimum(min_vs), maximum(max_vs),
+                    range_flags, N_test, (range_flags / N_test) * 100,
+                    chi05_flags, N_test, (chi05_flags / N_test) * 100)
         end
     end
 
     # -------------------------------------------------------------------------
-    # TEST 5: Limited-Meter Attacker vs Meter Budget
+    # TEST 5: Redesigned Limited-Meter Attacker (Least-Squares Residual-Space Projection)
     # -------------------------------------------------------------------------
     println("\n================================================================================")
-    println("TEST 5: Limited-Meter Attacker: Detection vs Meter Budget (N = $N_test)")
+    println("TEST 5: Redesigned Limited-Meter Attacker (LS Projection vs Budget M, N = $N_test)")
     println("================================================================================")
-    println("Meter Budget | Unaltered | Mean Trunc Leakage | Mean Delta J | Det (a=0.05) | Det (a=0.01) | rN_max > 3.0")
-    println("-------------|-----------|--------------------|--------------|--------------|--------------|-------------")
+    println("Budget M | Mean Shift Ratio | Mean Cos Sim | Mean Delta J | Chi2(5%) Det | Chi2(1%) Det | LNR(5%) Det  | LNR(1%) Det")
+    println("---------|------------------|--------------|--------------|--------------|--------------|--------------|------------")
 
-    budgets = cfg["limited_meter_attack"]["meter_budgets"]
+    M_list = [10, 20, 40, 60, 80, 120, 163]
+    W_mat = Matrix(se.method.precision)
 
-    for bgt in budgets
+    for M in M_list
+        rng_ls = MersenneTwister(999)
+        shift_ratios = Float64[]
+        cos_sims = Float64[]
         d_J_list = Float64[]
-        leak_list = Float64[]
-        fa05_cnt = 0
-        fa01_cnt = 0
-        rn_cnt = 0
+        chi05_cnt = 0
+        chi01_cnt = 0
+        lnr05_cnt = 0
+        lnr01_cnt = 0
+
+        # Draw 5 distinct random subsets S per budget, evaluate across samples
+        num_subsets = 5
+        subsets = [sort(randperm(MersenneTwister(1000 + M + k), m)[1:M]) for k in 1:num_subsets]
 
         for t = 1:N_test
             z_t = Z_base[t, :]
@@ -418,13 +456,23 @@ function main()
             H_t = H_base_list[t]
             J_0 = J_base_vec[t]
 
-            att_lim = generate_limited_meter_attack(z_t, x_hat_t, H_t, cfg;
-                                                    meter_budget = bgt, target_buses = [10, 18],
-                                                    alpha_V = 0.03, alpha_theta = 0.015)
+            # Cycle through random subsets
+            S_sub = subsets[mod1(t, num_subsets)]
 
-            push!(leak_list, att_lim.metadata["truncation_leakage_norm"])
+            att_ls = generate_limited_meter_ls_attack(z_t, x_hat_t, H_t, W_mat, cfg;
+                                                      meter_subset = S_sub,
+                                                      M = M,
+                                                      target_buses = [10, 18],
+                                                      alpha_V = 0.03,
+                                                      alpha_theta = 0.015,
+                                                      family = :unconstrained,
+                                                      lambda = 1e5,
+                                                      rng = rng_ls)
 
-            se.method.mean .= att_lim.z_attacked
+            push!(shift_ratios, att_ls.metadata["shift_ratio"])
+            push!(cos_sims, att_ls.metadata["cos_sim"])
+
+            se.method.mean .= att_ls.z_attacked
             setInitialPoint!(se)
             stateEstimation!(se; verbose = 0)
 
@@ -432,27 +480,32 @@ function main()
             push!(d_J_list, J_att - J_0)
 
             if J_att > chi_05
-                fa05_cnt += 1
+                chi05_cnt += 1
             end
             if J_att > chi_01
-                fa01_cnt += 1
+                chi01_cnt += 1
             end
 
             res_t = residualTest!(se; threshold = 1000.0)
-            if res_t.maxNormalizedResidual > 3.0
-                rn_cnt += 1
+            max_rn = res_t.maxNormalizedResidual
+            if max_rn > lnr_05
+                lnr05_cnt += 1
+            end
+            if max_rn > lnr_01
+                lnr01_cnt += 1
             end
         end
 
-        @printf("  %3d / 163  |    %3d    |     %10.4f     |  %+10.2f  | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%)\n",
-                bgt, m - bgt, mean(leak_list), mean(d_J_list),
-                fa05_cnt, N_test, (fa05_cnt / N_test) * 100,
-                fa01_cnt, N_test, (fa01_cnt / N_test) * 100,
-                rn_cnt, N_test, (rn_cnt / N_test) * 100)
+        @printf("  %3d    |      %5.3f       |    %6.4f    |  %+10.2f  | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%) | %3d/%3d (%5.1f%%)\n",
+                M, mean(shift_ratios), mean(cos_sims), mean(d_J_list),
+                chi05_cnt, N_test, (chi05_cnt / N_test) * 100,
+                chi01_cnt, N_test, (chi01_cnt / N_test) * 100,
+                lnr05_cnt, N_test, (lnr05_cnt / N_test) * 100,
+                lnr01_cnt, N_test, (lnr01_cnt / N_test) * 100)
     end
 
     println("\n================================================================================")
-    println("VERIFICATION SUITE SUMMARY: ALL 5 ATTACK TESTS COMPLETED SUCCESSFULLY!")
+    println("VERIFICATION SUITE SUMMARY: ALL ATTACK TESTS COMPLETED SUCCESSFULLY!")
     println("================================================================================")
 end
 
