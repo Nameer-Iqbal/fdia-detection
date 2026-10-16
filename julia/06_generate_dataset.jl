@@ -181,8 +181,10 @@ function main()
     attack_type_cols = Vector{String}(undef, total_rows)
     family_cols = Vector{String}(undef, total_rows)
     magnitudes = zeros(Float64, total_rows)
+    shift_magnitudes_pu = zeros(Float64, total_rows)
     shift_ratios = zeros(Float64, total_rows)
     signs = zeros(Int, total_rows)
+    effective_attacks = falses(total_rows)
     n_att_meters = zeros(Int, total_rows)
     att_buses_strs = Vector{String}(undef, total_rows)
     converged_flags = falses(total_rows)
@@ -247,8 +249,10 @@ function main()
         attack_type_cols[row_ptr] = "none"
         family_cols[row_ptr] = "none"
         magnitudes[row_ptr] = 0.0
+        shift_magnitudes_pu[row_ptr] = 0.0
         shift_ratios[row_ptr] = 0.0
         signs[row_ptr] = 0
+        effective_attacks[row_ptr] = false
         n_att_meters[row_ptr] = 0
         att_buses_strs[row_ptr] = "[]"
         max_se_iters = cfg["general"]["se_max_iter"]
@@ -350,12 +354,17 @@ function main()
         attack_type_cols[row_ptr] = att_type
         family_cols[row_ptr] = fam_str
         magnitudes[row_ptr] = Float64(att_res.metadata["magnitude"])
+        shift_magnitudes_pu[row_ptr] = (att_type == "random") ? 0.0 : Float64(att_res.metadata["magnitude"])
         if haskey(att_res.metadata, "shift_ratio")
-            shift_ratios[row_ptr] = Float64(att_res.metadata["shift_ratio"])
+            sr = Float64(att_res.metadata["shift_ratio"])
+            shift_ratios[row_ptr] = sr
+            effective_attacks[row_ptr] = (sr >= 0.05)
         elseif att_type == "random"
             shift_ratios[row_ptr] = 0.0
+            effective_attacks[row_ptr] = true
         else
             shift_ratios[row_ptr] = 1.0
+            effective_attacks[row_ptr] = true
         end
         signs[row_ptr] = Int(att_res.metadata["sign"])
         n_att_meters[row_ptr] = Int(att_res.metadata["n_attacked_meters"])
@@ -395,8 +404,10 @@ function main()
         attack_type = attack_type_cols,
         family = family_cols,
         magnitude = magnitudes,
+        shift_magnitude_pu = shift_magnitudes_pu,
         shift_ratio = shift_ratios,
         sign = signs,
+        effective_attack = effective_attacks,
         n_attacked_meters = n_att_meters,
         attacked_buses = att_buses_strs,
         converged_se = converged_flags,
@@ -453,8 +464,10 @@ function main()
         "attack_type",
         "family",
         "magnitude",
+        "shift_magnitude_pu",
         "shift_ratio",
         "sign",
+        "effective_attack",
         "n_attacked_meters",
         "attacked_buses",
         [ "mask_$k" for k in 1:m ]...,
@@ -476,7 +489,13 @@ function main()
         "non_converged_se_count" => non_converged_count,
         "storage_format" => "CSV",
         "csv_filesize_mb" => round(csv_bytes / (1024 * 1024), digits=2),
-        "storage_rationale" => "CSV was chosen over HDF5 because the dataset is 10,000 rows x 486 columns (~65 MB), easily fitting in memory, natively readable by Pandas/Polars/Julia without requiring external HDF5 C libraries, and gitignored.",
+        "storage_rationale" => "CSV was chosen over HDF5 because the dataset is 10,000 rows x 702 columns (~99 MB), easily fitting in memory, natively readable by Pandas/Polars/Julia without requiring external HDF5 C libraries, and gitignored.",
+        "column_units_and_descriptions" => Dict(
+            "magnitude" => "Mixed units: stores voltage shift fraction (pu, 0.01 to 0.05) for state-shift attacks (exact_ac, linearised, limited_meter); stores measurement noise standard deviation multiplier (3.0 to 10.0) for random attacks; 0.0 for normal rows.",
+            "shift_magnitude_pu" => "Clean state shift voltage fraction in per-unit (pu): 0.01 to 0.05 for all state-shift attacks; exactly 0.0 for random attacks and normal rows.",
+            "effective_attack" => "Boolean flag indicating whether the attack meaningfully perturbed the system: for limited_meter rows, true if shift_ratio >= 0.05 (false if shift was dampened below 5%); for all other attacked rows true; for normal rows false.",
+            "shift_ratio" => "Ratio of achieved state shift norm to target state shift norm ||c_achieved|| / ||c_0||. 1.0 for full stealth attacks, 0.0 for normal and random rows, and variable (0.0 to 1.28) for limited_meter rows."
+        ),
         "bdd_thresholds" => Dict(
             "chi_square_05" => chi_05,
             "chi_square_01" => chi_01,

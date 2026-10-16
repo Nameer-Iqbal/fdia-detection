@@ -606,3 +606,32 @@
         - $M = 60$ ($N = 130$): Min = $0.0227$, Median = $0.2707$, Max = $1.1331$
         - $M = 80$ ($N = 146$): Min = $0.0643$, Median = $0.4598$, Max = $1.2753$
         - $M = 120$ ($N = 150$): Min = $0.2519$, Median = $0.6803$, Max = $1.0934$
+
+  - **Part 7 (Dataset Column Refinements & Lambda Sensitivity Check):**
+    - **Added Columns `shift_magnitude_pu` and `effective_attack`:**
+      - `shift_magnitude_pu`: Clean state shift voltage fraction in pu ($0.01$ to $0.05$ for state-shift attacks; exactly $0.0$ for random attacks and normal rows). Resolves mixed-unit ambiguity with the legacy `magnitude` column (which records noise multipliers for random attacks).
+      - `effective_attack`: Boolean flag indicating whether the attack meaningfully altered the system state. For `limited_meter` rows, defined as `shift_ratio >= 0.05` (false if the least-squares projection attenuated the shift below 5% of target). For all other attack types, `true`; for normal rows, `false`.
+    - **Limited-Meter Inefficacy Quantification ($N = 833$ rows):**
+      - Total `limited_meter` rows: **833**
+      - Ineffective attacks (`shift_ratio < 0.05`): **206 / 833 (24.73%)**
+      - Effective attacks (`shift_ratio >= 0.05`): **627 / 833 (75.27%)**
+      - Breakdown by meter budget $M$:
+        - $M = 10$ ($N = 129$): **102 / 129 ineffective (79.1%)**
+        - $M = 20$ ($N = 132$): **76 / 132 ineffective (57.6%)**
+        - $M = 40$ ($N = 146$): **24 / 146 ineffective (16.4%)**
+        - $M = 60$ ($N = 130$): **4 / 130 ineffective (3.1%)**
+        - $M = 80$ ($N = 146$): **0 / 146 ineffective (0.0%)**
+        - $M = 120$ ($N = 150$): **0 / 150 ineffective (0.0%)**
+      *Physical Rationale:* When an adversary controls very few meters ($M \le 20$), the least-squares projection strongly dampens state injection to avoid residual leakage on uncompromised meters, rendering the vast majority of shifts practically imperceptible ($< 5\%$). At $M \ge 80$, 100% of attacks are effective.
+    - **Lambda Sensitivity Check ($M = 60$, $N = 200$ samples):**
+      | Regularization $\lambda$ | Median Shift Ratio | Mean $\Delta J$ | $\chi^2(5\%)$ Det Count | $\chi^2(5\%)$ Det Rate |
+      |---|---|---|---|---|
+      | **$10^4$** | $0.1467$ ($14.67\%$) | $+1.77$ | 12 / 200 | **6.0%** |
+      | **$10^5$** (default) | $0.2221$ ($22.21\%$) | $+16.44$ | 63 / 200 | **31.5%** |
+      | **$10^6$** | $0.3690$ ($36.90\%$) | $+164.64$ | 200 / 200 | **100.0%** |
+      *Stealth vs. Shift Trade-off:* Low $\lambda = 10^4$ heavily penalizes leakage ($c^T Q c$), dampening the shift to preserve stealth ($6.0\%$ detection, indistinguishable from the $5.0\%$ normal false alarm rate). High $\lambda = 10^6$ forces adherence to $c_0$ at the cost of catastrophic residual leakage ($\Delta J = +164.64$), triggering 100% BDD detection. The configured $\lambda = 10^5$ provides an optimal intermediate operational trade-off.
+    - **Dataset Regeneration Verification:**
+      - Regenerated `data/attacks_full.csv` (10,000 rows $\times$ 702 columns, 99.09 MB) and `data/attacks_meta.json`.
+      - Confirmed row counts: exactly 5,000 normal and 5,000 attacked rows.
+      - Confirmed exact AC stealth detection remains identical: single-bus **5.55%** and multi-bus **4.45%** (matching normal baseline false alarm rate of **5.06%**).
+
