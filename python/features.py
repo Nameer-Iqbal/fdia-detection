@@ -277,47 +277,42 @@ def compute_group_c_sensitivity(df_sens):
 # ==============================================================================
 # FEATURE GROUP D: NON-RESIDUAL FEATURES (684 columns)
 # ==============================================================================
-def compute_group_d_non_residual(df_attacks, train_mask_normal):
+def compute_group_d1_raw(df_attacks):
     """
-    Computes Group D:
+    Computes Group D1:
      1. Raw measurements z_1..163 (163)
      2. Estimated state x_hat_1..65 (65)
-     3. Hour-of-day forecast deviations for z and x_hat (163 + 65 = 228)
-        - Forecast baseline is fit on TRAIN normal rows ONLY across 24 hourly buckets (0..23).
-     4. Change from previous normal operating point: Delta z and Delta x_hat (163 + 65 = 228)
-        - Reference is strictly the preceding normal time step (t-1).
-        - For both the normal row at t and the attacked row at t:
-          Delta z(t) = z(t) - z_normal(t-1)
-          Delta x(t) = x_hat(t) - x_hat_normal(t-1)
-        - Strictly prevents twin leakage and future leakage!
-    Total: 163 + 65 + 228 + 228 = 684 features.
+    Total: 163 + 65 = 228 features.
     """
-    print("Computing Feature Group D: Non-Residual Features (684 columns)...")
     m = 163
     n = 65
-    features_d = {}
-
-    # 1. Raw measurements z
+    feat_d1 = {}
     for i in range(1, m + 1):
-        features_d[f"feat_nonres_z_{i}"] = df_attacks[f"z_{i}"].values
-
-    # 2. Raw state estimates x_hat
+        feat_d1[f"feat_nonres_z_{i}"] = df_attacks[f"z_{i}"].values
     for i in range(1, n + 1):
-        features_d[f"feat_nonres_x_hat_{i}"] = df_attacks[f"x_hat_{i}"].values
+        feat_d1[f"feat_nonres_x_hat_{i}"] = df_attacks[f"x_hat_{i}"].values
+    return pd.DataFrame(feat_d1, index=df_attacks.index)
 
-    # 3. Hour-of-day forecast baselines fit on TRAIN normal rows ONLY
+
+def compute_group_d2_hourly_forecast(df_attacks, train_mask_normal):
+    """
+    Computes Group D2:
+     - Hour-of-day forecast deviations for z (163) and x_hat (65).
+     - Baselines are fit strictly on TRAIN normal rows only across 24 hourly buckets (0..23).
+    Total: 163 + 65 = 228 features.
+    """
+    m = 163
+    n = 65
+    feat_d2 = {}
     df_train_norm = df_attacks[train_mask_normal]
     z_cols = [f"z_{i}" for i in range(1, m + 1)]
     x_cols = [f"x_hat_{i}" for i in range(1, n + 1)]
 
-    # Compute mean per hour bucket (0..23) on train normal rows
     z_hourly_means = df_train_norm.groupby("hour_of_day")[z_cols].mean()
     x_hourly_means = df_train_norm.groupby("hour_of_day")[x_cols].mean()
 
-    # Pre-compute forecast matrices for all rows
     hours = df_attacks["hour_of_day"].values
     N = len(df_attacks)
-
     z_dev_mat = np.zeros((N, m))
     x_dev_mat = np.zeros((N, n))
 
@@ -328,7 +323,6 @@ def compute_group_d_non_residual(df_attacks, train_mask_normal):
                 mu_z = z_hourly_means.loc[h].values
                 mu_x = x_hourly_means.loc[h].values
             else:
-                # Fallback to global train normal mean if bucket is empty
                 mu_z = df_train_norm[z_cols].mean().values
                 mu_x = df_train_norm[x_cols].mean().values
 
@@ -336,20 +330,26 @@ def compute_group_d_non_residual(df_attacks, train_mask_normal):
             x_dev_mat[h_idx, :] = df_attacks.iloc[h_idx][x_cols].values - mu_x
 
     for i in range(1, m + 1):
-        features_d[f"feat_nonres_z_forecast_dev_{i}"] = z_dev_mat[:, i - 1]
+        feat_d2[f"feat_nonres_z_forecast_dev_{i}"] = z_dev_mat[:, i - 1]
     for i in range(1, n + 1):
-        features_d[f"feat_nonres_x_forecast_dev_{i}"] = x_dev_mat[:, i - 1]
+        feat_d2[f"feat_nonres_x_forecast_dev_{i}"] = x_dev_mat[:, i - 1]
 
-    # 4. Causal Change from Previous Normal Operating Point (Delta z and Delta x_hat)
-    # Strategy to prevent twin leakage:
-    # Build a lookup table from time_idx t to the unattacked normal measurements z_normal(t) and x_normal(t).
-    # For every row at time t (whether normal or attacked):
-    #   if t > 1:
-    #       Delta z(t) = z(t) - z_normal(t - 1)
-    #       Delta x(t) = x_hat(t) - x_normal(t - 1)
-    #   if t == 1:
-    #       Delta z(1) = z(1) - z_normal(1)  (= 0 for normal row)
-    #       Delta x(1) = x_hat(1) - x_normal(1)
+    return pd.DataFrame(feat_d2, index=df_attacks.index)
+
+
+def compute_group_d3_change_prev(df_attacks):
+    """
+    Computes Group D3:
+     - Causal change from previous normal operating point for z (163) and x_hat (65).
+     - Reference is strictly the preceding unattacked normal state z_normal(t-1) to eliminate twin/future leakage.
+    Total: 163 + 65 = 228 features.
+    """
+    m = 163
+    n = 65
+    feat_d3 = {}
+    z_cols = [f"z_{i}" for i in range(1, m + 1)]
+    x_cols = [f"x_hat_{i}" for i in range(1, n + 1)]
+
     normal_rows = df_attacks[df_attacks["label"] == 0].sort_values("time_idx")
     time_to_z_norm = {}
     time_to_x_norm = {}
@@ -358,6 +358,7 @@ def compute_group_d_non_residual(df_attacks, train_mask_normal):
         time_to_z_norm[t] = r[z_cols].values.astype(float)
         time_to_x_norm[t] = r[x_cols].values.astype(float)
 
+    N = len(df_attacks)
     delta_z_mat = np.zeros((N, m))
     delta_x_mat = np.zeros((N, n))
 
@@ -377,11 +378,28 @@ def compute_group_d_non_residual(df_attacks, train_mask_normal):
         delta_x_mat[idx, :] = x_curr - x_prev
 
     for i in range(1, m + 1):
-        features_d[f"feat_nonres_delta_z_prev_{i}"] = delta_z_mat[:, i - 1]
+        feat_d3[f"feat_nonres_delta_z_prev_{i}"] = delta_z_mat[:, i - 1]
     for i in range(1, n + 1):
-        features_d[f"feat_nonres_delta_x_prev_{i}"] = delta_x_mat[:, i - 1]
+        feat_d3[f"feat_nonres_delta_x_prev_{i}"] = delta_x_mat[:, i - 1]
 
-    return pd.DataFrame(features_d, index=df_attacks.index)
+    return pd.DataFrame(feat_d3, index=df_attacks.index)
+
+
+def compute_group_d_non_residual(df_attacks, train_mask_normal):
+    """
+    Computes Group D and its three constituent sub-groups:
+      - D1: Raw z and x_hat (228 columns)
+      - D2: Hour-of-day forecast deviations (228 columns)
+      - D3: Causal change from previous normal operating point (228 columns)
+    Total: 684 features.
+    Returns (feat_d, feat_d1, feat_d2, feat_d3).
+    """
+    print("Computing Feature Group D: Non-Residual Features (684 columns split into D1: 228, D2: 228, D3: 228)...")
+    feat_d1 = compute_group_d1_raw(df_attacks)
+    feat_d2 = compute_group_d2_hourly_forecast(df_attacks, train_mask_normal)
+    feat_d3 = compute_group_d3_change_prev(df_attacks)
+    feat_d = pd.concat([feat_d1, feat_d2, feat_d3], axis=1)
+    return feat_d, feat_d1, feat_d2, feat_d3
 
 
 # ==============================================================================
@@ -490,63 +508,101 @@ def run_sanity_baselines(df_attacks, df_splits, bdd_cfg):
           f"{eff_att['rc_flag'].sum():3d} ({eff_att['rc_flag'].mean()*100:5.2f}%)")
 
 
-def run_shuffled_label_check(features_d, df_attacks, df_splits, seed=42):
+def run_shuffled_label_check(features, df_attacks, df_splits, group_name="Group D", n_seeds=20):
     """
     Shuffled-label check:
-     - Takes Feature Group D
-     - Shuffles labels randomly on the train split
-     - Trains a tiny Random Forest (n_estimators=30, max_depth=6)
+     - Shuffles labels randomly on the train split across n_seeds distinct seeds
+     - Trains a tiny Random Forest (n_estimators=30, max_depth=6) per seed
      - Evaluates ROC-AUC on the test split
-     - Verifies AUC ~ 0.50. Raises alert if AUC > 0.55!
+     - States pass criterion: Mean AUC in [0.47, 0.53] and no single run > 0.58.
     """
     print("\n" + "="*80)
-    print("SHUFFLED-LABEL LEAKAGE SANITY CHECK (Feature Group D)")
+    print(f"SHUFFLED-LABEL LEAKAGE SANITY CHECK ({group_name}, {n_seeds} SEEDS)")
     print("="*80)
+    print("Pass criterion: Mean AUC within 0.50 +/- 0.03 ([0.47, 0.53]) and no single run above 0.58.")
 
     train_mask = df_splits["split"] == "train"
     test_mask = df_splits["split"] == "test"
 
-    X_train = features_d[train_mask].values
-    X_test = features_d[test_mask].values
+    X_train = features[train_mask].values
+    X_test = features[test_mask].values
 
     y_train = df_attacks[train_mask]["label"].values.copy()
     y_test = df_attacks[test_mask]["label"].values.copy()
 
-    # Shuffle training labels randomly
-    rng = np.random.default_rng(seed)
-    y_train_shuffled = rng.permutation(y_train)
+    aucs = []
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        y_train_shuffled = rng.permutation(y_train)
 
-    rf = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=seed, n_jobs=-1)
-    rf.fit(X_train, y_train_shuffled)
+        rf = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=s, n_jobs=-1)
+        rf.fit(X_train, y_train_shuffled)
 
-    y_pred_proba = rf.predict_proba(X_test)[:, 1]
-    auc_shuffled = roc_auc_score(y_test, y_pred_proba)
+        y_pred_proba = rf.predict_proba(X_test)[:, 1]
+        auc_s = roc_auc_score(y_test, y_pred_proba)
+        aucs.append(auc_s)
 
-    print(f"Random Forest on Shuffled Labels Test ROC-AUC (seed={seed}): {auc_shuffled:.4f}")
+    mean_auc = float(np.mean(aucs))
+    std_auc = float(np.std(aucs))
+    min_auc = float(np.min(aucs))
+    max_auc = float(np.max(aucs))
 
-    # Evaluate 5-trial permutation distribution to quantify seed variance
-    multi_aucs = []
-    for s in range(5):
-        y_shuf_s = rng.permutation(y_train)
-        rf_s = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=s, n_jobs=-1)
-        rf_s.fit(X_train, y_shuf_s)
-        p_s = rf_s.predict_proba(X_test)[:, 1]
-        multi_aucs.append(roc_auc_score(y_test, p_s))
+    passed = (0.47 <= mean_auc <= 0.53) and (max_auc <= 0.58)
 
-    mean_auc = float(np.mean(multi_aucs))
-    std_auc = float(np.std(multi_aucs))
-    print(f"5-Trial Permutation Distribution: Mean AUC = {mean_auc:.4f} +/- {std_auc:.4f} (range [{min(multi_aucs):.4f}, {max(multi_aucs):.4f}])")
-
-    # If AUC is clearly above 0.5 (e.g. > 0.65), stop and report!
-    if auc_shuffled > 0.65 or mean_auc > 0.65:
-        raise ValueError(f"FATAL LEAKAGE SUSPECTED! Shuffled-label AUC is clearly above 0.5 (seed {seed}: {auc_shuffled:.4f}, 5-trial mean: {mean_auc:.4f})!")
-    else:
-        print(f"Shuffled-Label Check: PASSED (AUC is ~0.50 [5-trial mean: {mean_auc:.4f}], zero synthetic label leakage detected).")
+    print(f"{group_name} ({n_seeds} seeds): Mean={mean_auc:.4f}, Std={std_auc:.4f}, Min={min_auc:.4f}, Max={max_auc:.4f}")
+    print(f"Pass Status: {'PASSED' if passed else 'EXCEEDED THRESHOLD'}")
 
     return {
-        "seed_auc": round(float(auc_shuffled), 4),
+        "group_name": group_name,
+        "n_seeds": n_seeds,
         "mean_auc": round(mean_auc, 4),
         "std_auc": round(std_auc, 4),
+        "min_auc": round(min_auc, 4),
+        "max_auc": round(max_auc, 4),
+        "passed": passed,
+        "all_aucs": [round(float(a), 4) for a in aucs]
+    }
+
+
+def run_real_label_check(features, df_attacks, df_splits, group_name="Group D3"):
+    """
+    Trains a small Random Forest with REAL labels on train split and evaluates Test ROC-AUC on:
+     1. All 2,000 standard test split rows
+     2. exact_ac attacks only (exact_ac_single_bus + exact_ac_multi_bus vs normal in test set)
+    """
+    print("\n" + "="*80)
+    print(f"REAL-LABEL VALIDATION CHECK ({group_name})")
+    print("="*80)
+
+    train_mask = (df_splits["split"] == "train").values
+    test_mask = (df_splits["split"] == "test").values
+
+    X_train = features[train_mask].values
+    X_test = features[test_mask].values
+
+    y_train = df_attacks[train_mask]["label"].values
+    y_test = df_attacks[test_mask]["label"].values
+
+    rf = RandomForestClassifier(n_estimators=30, max_depth=6, random_state=42, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    p_test = rf.predict_proba(X_test)[:, 1]
+
+    auc_all = roc_auc_score(y_test, p_test)
+    print(f"Real-label RF on {group_name} alone: Test ROC-AUC (all 2000 test rows): {auc_all:.4f}")
+
+    test_attacks = df_attacks[test_mask].reset_index(drop=True)
+    exact_mask = test_attacks["attack_type"].isin(["exact_ac_single_bus", "exact_ac_multi_bus"]).values
+    norm_mask = (test_attacks["label"] == 0).values
+    sub_mask = exact_mask | norm_mask
+
+    y_test_sub = y_test[sub_mask]
+    p_test_sub = p_test[sub_mask]
+    auc_exact = roc_auc_score(y_test_sub, p_test_sub)
+    print(f"Real-label RF on {group_name} alone: Test ROC-AUC (exact_ac vs normal, {sum(sub_mask)} rows): {auc_exact:.4f}")
+
+    return {
+        "test_auc_all": round(float(auc_all), 4),
+        "test_auc_exact_ac": round(float(auc_exact), 4)
     }
 
 
@@ -583,7 +639,7 @@ def main():
 
     # Train normal mask for Group D forecast baseline
     train_norm_mask = (df_splits["split"] == "train") & (df_attacks["label"] == 0)
-    feat_d = compute_group_d_non_residual(df_attacks, train_norm_mask)
+    feat_d, feat_d1, feat_d2, feat_d3 = compute_group_d_non_residual(df_attacks, train_norm_mask)
 
     # 3. Combine Features
     print("\nAssembling complete feature matrix...")
@@ -591,18 +647,23 @@ def main():
     feature_columns = list(df_all_features.columns)
 
     print(f"Feature Group Counts:")
-    print(f"  Group A (Residuals):     {feat_a.shape[1]} columns")
-    print(f"  Group B (Consistency):   {feat_b.shape[1]} columns")
-    print(f"  Group C (Sensitivity):   {feat_c.shape[1]} columns")
-    print(f"  Group D (Non-Residual):  {feat_d.shape[1]} columns")
-    print(f"  Total Engineered Features: {df_all_features.shape[1]} columns")
+    print(f"  Group A (Residuals):          {feat_a.shape[1]} columns")
+    print(f"  Group B (Consistency):        {feat_b.shape[1]} columns")
+    print(f"  Group C (Sensitivity):        {feat_c.shape[1]} columns")
+    print(f"  Group D (Non-Residual):       {feat_d.shape[1]} columns")
+    print(f"    - D1 (Raw z, x_hat):        {feat_d1.shape[1]} columns")
+    print(f"    - D2 (Hourly Forecast Dev): {feat_d2.shape[1]} columns")
+    print(f"    - D3 (Change from Prev):    {feat_d3.shape[1]} columns")
+    print(f"  Total Engineered Features:    {df_all_features.shape[1]} columns")
 
     # 4. Leakage Verification
     assert_no_leakage(feature_columns)
 
-    # 5. Sanity Baselines & Shuffled Label Test
+    # 5. Sanity Baselines & Leakage Checks
     run_sanity_baselines(df_attacks, df_splits, bdd_cfg)
-    auc_shuffled_info = run_shuffled_label_check(feat_d, df_attacks, df_splits, seed=cfg["general"]["seed"])
+    check_d = run_shuffled_label_check(feat_d, df_attacks, df_splits, group_name="Group D (all 684)", n_seeds=20)
+    check_d3 = run_shuffled_label_check(feat_d3, df_attacks, df_splits, group_name="Group D3 (change prev, 228)", n_seeds=20)
+    real_d3 = run_real_label_check(feat_d3, df_attacks, df_splits, group_name="Group D3")
 
     # 6. Save Features by Split
     print("\n" + "="*80)
@@ -656,14 +717,30 @@ def main():
                 "count": feat_d.shape[1],
                 "columns": list(feat_d.columns),
                 "description": "Raw measurements z (163), estimated states x_hat (65), hourly forecast deviations (228), and causal change from previous normal operating point (228)."
+            },
+            "group_d1_raw": {
+                "count": feat_d1.shape[1],
+                "columns": list(feat_d1.columns),
+                "description": "Raw measurement vector z (163) and raw estimated state vector x_hat (65)."
+            },
+            "group_d2_hourly_forecast": {
+                "count": feat_d2.shape[1],
+                "columns": list(feat_d2.columns),
+                "description": "Deviation of z (163) and x_hat (65) from train normal hourly forecast baselines."
+            },
+            "group_d3_change_prev": {
+                "count": feat_d3.shape[1],
+                "columns": list(feat_d3.columns),
+                "description": "Causal change of z (163) and x_hat (65) from preceding unattacked normal state z_normal(t-1)."
             }
         },
-        "shuffled_label_auc_check": {
-            "feature_group": "group_d_non_residual",
-            "seed_auc": auc_shuffled_info["seed_auc"],
-            "5_trial_mean_auc": auc_shuffled_info["mean_auc"],
-            "5_trial_std_auc": auc_shuffled_info["std_auc"],
-            "status": "PASSED"
+        "shuffled_label_auc_checks": {
+            "pass_criterion": "Mean AUC within 0.50 +/- 0.03 ([0.47, 0.53]) and no single run above 0.58",
+            "group_d": check_d,
+            "group_d3": check_d3
+        },
+        "real_label_checks": {
+            "group_d3": real_d3
         },
         "forbidden_excluded_columns": list(FORBIDDEN_COLUMNS)
     }

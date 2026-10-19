@@ -43,8 +43,11 @@ power_flow_reactive_std = 0.008
 
 [features]
 # Feature Groups:
-# A: Residual features (r, r_norm, J, max_r_norm)
-# B: Consistency (physics) features (power mismatch, neighbor voltage dev, branch flow dev)
-# C: Sensitivity features (measurement leverage / hat matrix diagonal)
-# D: Non-residual features (raw z, x_hat, forecast deviations, change from previous)
+# A: Residual features (r, r_norm, J, max_r_norm) - 328 cols
+# B: Consistency (physics) features (power mismatch, neighbor voltage dev, branch flow dev) - 163 cols
+# C: Sensitivity features (measurement leverage / hat matrix diagonal) - 163 cols
+# D: Non-residual features (684 cols total):
+#   - D1: Raw measurements z (163) and raw state estimates x_hat (65) - 228 cols
+#   - D2: Hour-of-day forecast deviations (mean over TRAIN normal rows) - 228 cols
+#   - D3: Causal change from previous normal operating point z_normal(t-1) - 228 cols
 save_format = "csv"
