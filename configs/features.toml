@@ -1,0 +1,50 @@
+# ==============================================================================
+# Feature Engineering & Dataset Split Configuration (Task 7)
+# IEEE 33-Bus Radial Distribution System
+# ==============================================================================
+
+[general]
+seed = 42
+dataset_path = "data/attacks_full.csv"
+splits_output_path = "data/splits.csv"
+features_output_path = "data/features.csv"
+features_meta_output_path = "data/features_meta.json"
+h_matrix_path = "data/H_example.csv"
+case_path = "data/cases/case33bw.m"
+bdd_config_path = "configs/bdd.toml"
+
+[splits]
+# Group-aware split ratios (by group_id, 5000 total groups)
+train_ratio = 0.60
+val_ratio = 0.20
+test_ratio = 0.20
+
+# Attack types for the "unseen attack" generalization split:
+# Training is restricted to these types:
+train_attack_types = [
+    "random",
+    "linearised_single_bus",
+    "linearised_multi_bus"
+]
+
+# These attack types are held out of training entirely:
+held_out_attack_types = [
+    "exact_ac_single_bus",
+    "exact_ac_multi_bus",
+    "limited_meter"
+]
+
+[noise]
+voltmeter_std = 0.005
+power_injection_active_std = 0.010
+power_injection_reactive_std = 0.010
+power_flow_active_std = 0.008
+power_flow_reactive_std = 0.008
+
+[features]
+# Feature Groups:
+# A: Residual features (r, r_norm, J, max_r_norm)
+# B: Consistency (physics) features (power mismatch, neighbor voltage dev, branch flow dev)
+# C: Sensitivity features (measurement leverage / hat matrix diagonal)
+# D: Non-residual features (raw z, x_hat, forecast deviations, change from previous)
+save_format = "csv"

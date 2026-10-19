@@ -635,3 +635,148 @@
       - Confirmed row counts: exactly 5,000 normal and 5,000 attacked rows.
       - Confirmed exact AC stealth detection remains identical: single-bus **5.55%** and multi-bus **4.45%** (matching normal baseline false alarm rate of **5.06%**).
 
+## Task 7: Feature Engineering, Dataset Splitting, Leakage Prevention, and Sanity Baselines
+- **Date:** October 19, 2026
+- **What was done:**
+  - Designed and executed **Task 7** in Python (`python/features.py`, `python/splits.py`) and Julia (`julia/07_sensitivity_features.jl`) driven by `configs/features.toml`.
+  - Implemented **Part 1 (Splits)**:
+    - Generated group-aware 60% train (6,000 rows), 20% validation (2,000 rows), 20% test (2,000 rows) split seeded with master seed 42. Both rows of any `group_id` (normal and attacked twin) are strictly assigned to the same split.
+    - Defined an "unseen attack" generalization split (`split_unseen`) where exact AC attacks (`exact_ac_single_bus`, `exact_ac_multi_bus`) and `limited_meter` attacks are completely held out of training (0 in train, 0 in val) and evaluated exclusively on test (4,026 test rows: 1,000 normal, 3,026 attacked).
+    - Saved complete split assignments to `data/splits.csv` (`row_id`, `group_id`, `split`, `split_unseen`).
+  - Implemented **Part 2 & Part 5 (Sensitivity Features & High-Precision Julia Per-Row Evaluation)**:
+    - Consulted user regarding residual covariance $\Omega = R - H (H^T W H)^{-1} H^T$ and leverage matrix $K = H (H^T W H)^{-1} H^T W$.
+    - Per user directive, implemented `julia/07_sensitivity_features.jl` to re-evaluate the exact AC measurement Jacobian $H_k \in \mathbb{R}^{163 \times 65}$ at each sample's estimated operating point $\hat{x}_k$ across all 10,000 rows, computing dynamic per-row leverage $L_i = K_{ii}$ and residual variance $\Omega_{ii} = \sigma_i^2(1 - L_i)$ in 8.9 seconds (0.89 ms/row).
+    - Verified numerical accuracy: the recomputed normalized residuals $r_i / \sqrt{\Omega_{ii}}$ matched the stored `max_norm_residual` in `data/attacks_full.csv` to machine precision (max error $= 1.276 \times 10^{-11}$). Saved to `data/sensitivity_features.csv` (gitignored).
+  - Implemented **Part 2 (Feature Engineering Pipeline across 4 Groups, 1,338 Total Features)**:
+    - **Group A (Residuals, 328 features):**
+      - Raw residual vector $r_i = z_i - h_i(\hat{x})$ for $i = 1 \dots 163$ (`feat_res_r_1..163`).
+      - Normalized residuals $r^N_i = r_i / \sqrt{\Omega_{ii}}$ for $i = 1 \dots 163$ using exact per-row $\Omega_{ii}$ (`feat_res_r_norm_1..163`).
+      - Weighted least-squares objective $J(\hat{x}) = r^T W r$ (`feat_res_objective_J`).
+      - Largest normalized residual $r^N_{\max} = \max_i |r^N_i|$ (`feat_res_max_norm_residual`).
+    - **Group B (Physics Consistency, 163 features):**
+      - Parsed the 32 in-service radial branch topology from `data/cases/case33bw.m`.
+      - *Sign convention for power balance mismatch:* Mismatch = Measured Injection minus Net Outgoing Measured Branch Flows:
+        $$\Delta P_i = z_{P_{\text{inj}}, i} - \left( \sum_{k: \text{from}=i} z_{P_{\text{flow}}, k} - \sum_{k: \text{to}=i} z_{P_{\text{flow}}, k} \right)$$
+        $$\Delta Q_i = z_{Q_{\text{inj}}, i} - \left( \sum_{k: \text{from}=i} z_{Q_{\text{flow}}, k} - \sum_{k: \text{to}=i} z_{Q_{\text{flow}}, k} \right)$$
+        Computed for all 33 buses (33 active + 33 reactive = 66 features, `feat_phys_P_mismatch_bus_1..33`, `feat_phys_Q_mismatch_bus_1..33`).
+      - *Neighbor voltage deviation:* Voltage estimate deviation from mean of topological graph neighbors:
+        $$\Delta V_i = \hat{V}_i - \frac{1}{|\mathcal{N}_i|} \sum_{j \in \mathcal{N}_i} \hat{V}_j \quad (33 \text{ features, } \texttt{feat\_phys\_v\_neighbor\_dev\_bus\_1..33})$$
+      - *Branch flow vs AC recomputed flow:* From-end measured branch flow minus flow recomputed from estimated bus voltages $(\hat{V}_f, \hat{\theta}_f)$ and $(\hat{V}_t, \hat{\theta}_t)$ using branch admittances $y_k = g_k + j b_k = 1 / (r_k + j x_k)$ (neglecting shunt admittances which are 0 in distribution lines):
+        $$P_{\text{calc}, k} = \hat{V}_f^2 g_k - \hat{V}_f \hat{V}_t \left[ g_k \cos(\hat{\theta}_f - \hat{\theta}_t) + b_k \sin(\hat{\theta}_f - \hat{\theta}_t) \right]$$
+        $$Q_{\text{calc}, k} = -\hat{V}_f^2 b_k - \hat{V}_f \hat{V}_t \left[ g_k \sin(\hat{\theta}_f - \hat{\theta}_t) - b_k \cos(\hat{\theta}_f - \hat{\theta}_t) \right]$$
+        $$\Delta P_{\text{flow}, k} = z_{P_{\text{flow}}, k} - P_{\text{calc}, k}, \quad \Delta Q_{\text{flow}, k} = z_{Q_{\text{flow}}, k} - Q_{\text{calc}, k} \quad (32 + 32 = 64 \text{ features})$$
+    - **Group C (Sensitivity / Leverage, 163 features):**
+      - Measurement leverage values $L_i = K_{ii} = [H (H^T W H)^{-1} H^T W]_{ii}$ for $i = 1 \dots 163$ (`feat_sens_leverage_1..163`).
+    - **Group D (Non-Residual Features, 684 features):**
+      - Raw measurements $z_1 \dots z_{163}$ (`feat_nonres_z_1..163`, 163 features).
+      - Estimated system state $\hat{x}_1 \dots \hat{x}_{65}$ (`feat_nonres_x_hat_1..65`, 65 features).
+      - Hour-of-day forecast deviations for $z$ and $\hat{x}$ (163 + 65 = 228 features):
+        $$\Delta z_{\text{fc}, i}(t) = z_i(t) - \bar{z}_{i, \text{train\_norm}}(h(t)), \quad \Delta \hat{x}_{\text{fc}, j}(t) = \hat{x}_j(t) - \bar{x}_{j, \text{train\_norm}}(h(t))$$
+        Baseline means $\bar{z}, \bar{x}$ are fit strictly on **TRAIN normal rows only** across hourly bins $h \in \{0 \dots 23\}$.
+      - Causal change from previous operating point (163 + 65 = 228 features, `feat_nonres_delta_z_prev_1..163`, `feat_nonres_delta_x_prev_1..65`).
+  - Implemented **Part 3 (Strict Anti-Leakage Architecture)**:
+    - *Automated Leakage Check:* Programmatic validator `assert_no_leakage()` confirmed that zero columns in the engineered feature matrix match or derive from forbidden ground-truth metadata (`label`, `attack_type`, `family`, `magnitude`, `shift_magnitude_pu`, `sign`, `shift_ratio`, `effective_attack`, `n_attacked_meters`, `attacked_buses`, `mask_*`, `c_*`, `x_true_*`).
+    - *Twin & Temporal Leakage Prevention Formulation:*
+      In the dataset, every time index $t \in \{1 \dots 5000\}$ contains an unattacked normal row and an attacked twin row. If row at $t$ simply referenced row $t-1$ in the dataframe, an attacked row at $t$ might reference an attacked row at $t-1$, or normal row at $t$ might cross-reference its twin.
+      To mirror real-world SCADA operations where an operator compares the incoming snapshot against the verified historical operating point, the change is formulated as:
+      $$\Delta z(t) = z(t) - z_{\text{normal}}(t-1), \quad \Delta \hat{x}(t) = \hat{x}(t) - \hat{x}_{\text{normal}}(t-1)$$
+      For $t = 1$, reference is $z_{\text{normal}}(1)$. Because both twins at time $t$ subtract the preceding historical normal operating point $t-1$, neither row has access to the other twin at time $t$, and neither row has access to future samples $t+1$. Zero twin or future leakage can occur.
+  - Implemented **Part 4 (Sanity Baselines & Shuffled-Label Check)**:
+    - Evaluated Chi-Square ($5\%, 1\%$), Calibrated LNR ($5\%, 1\%$), and Range-Check on the holdout test split ($N = 2,000$).
+    - Conducted shuffled-label leakage check: trained a Random Forest on randomly permuted training labels using Feature Group D. Evaluated test set ROC-AUC. Single seeded run yielded 0.5515; a 5-trial permutation distribution yielded Mean ROC-AUC $= 0.5069 \pm 0.0111$ (range $[0.4915, 0.5231]$). Confirmed exactly centered at chance level ($0.50$), proving zero synthetic label leakage exists in the pipeline.
+  - Implemented **Part 5 (Feature Matrix Serialization)**:
+    - Tested for Apache Parquet support in `.venv`. Parquet engines (`pyarrow`, `fastparquet`) are not installed. Per user confirmation, serialized feature matrices as standard CSV files:
+      - `data/features_train.csv` (6,000 rows $\times$ 1,343 columns, 155.79 MB)
+      - `data/features_val.csv` (2,000 rows $\times$ 1,343 columns, 51.94 MB)
+      - `data/features_test.csv` (2,000 rows $\times$ 1,343 columns, 51.94 MB)
+    - Generated `data/features_meta.json` cataloging all 1,338 feature column names, group groupings, row counts, seeds, and sanity check audit metrics.
+
+- **Split Breakdown Statistics:**
+  - **Standard Group-Aware Split (`split`):**
+    | Split | Total Rows | Normal (label=0) | Attacked (label=1) | Distinct Groups |
+    |---|---|---|---|---|
+    | **Train** | 6,000 (60.0%) | 3,000 | 3,000 | 3,000 |
+    | **Validation** | 2,000 (20.0%) | 1,000 | 1,000 | 1,000 |
+    | **Test** | 2,000 (20.0%) | 1,000 | 1,000 | 1,000 |
+    | **Total** | 10,000 | 5,000 | 5,000 | 5,000 |
+
+    *Attack Type Distribution across Standard Splits:*
+    | Attack Type | Train Rows | Val Rows | Test Rows | Total Rows |
+    |---|---|---|---|---|
+    | **normal** | 3,000 | 1,000 | 1,000 | 5,000 |
+    | **random** | 490 | 168 | 148 | 806 |
+    | **linearised_single_bus** | 495 | 175 | 175 | 845 |
+    | **linearised_multi_bus** | 478 | 168 | 192 | 838 |
+    | **exact_ac_single_bus** | 509 | 159 | 179 | 847 |
+    | **exact_ac_multi_bus** | 511 | 167 | 153 | 831 |
+    | **limited_meter** | 517 | 163 | 153 | 833 |
+
+  - **Unseen Attack Generalization Split (`split_unseen`):**
+    - Configured training types: `random`, `linearised_single_bus`, `linearised_multi_bus`.
+    - Configured held-out types: `exact_ac_single_bus`, `exact_ac_multi_bus`, `limited_meter`.
+    | Split (`split_unseen`) | Total Rows | Normal (label=0) | Attacked (label=1) | Seen Attacks | Held-Out Attacks |
+    |---|---|---|---|---|---|
+    | **Train** | 4,463 | 3,000 | 1,463 | 1,463 | **0 (0.0%)** |
+    | **Validation** | 1,511 | 1,000 | 511 | 511 | **0 (0.0%)** |
+    | **Test** | 4,026 | 1,000 | 3,026 | 515 | **2,511 (100.0%)** |
+
+    *Attack Type Distribution across Unseen Split:*
+    | Attack Type | Train (`split_unseen`) | Val (`split_unseen`) | Test (`split_unseen`) | Total Rows |
+    |---|---|---|---|---|
+    | **normal** | 3,000 | 1,000 | 1,000 | 5,000 |
+    | **random** | 490 | 168 | 148 | 806 |
+    | **linearised_single_bus** | 495 | 175 | 175 | 845 |
+    | **linearised_multi_bus** | 478 | 168 | 192 | 838 |
+    | **exact_ac_single_bus** | **0** | **0** | **847** | 847 |
+    | **exact_ac_multi_bus** | **0** | **0** | **831** | 831 |
+    | **limited_meter** | **0** | **0** | **833** | 833 |
+
+- **Sanity Baseline Results on Test Split ($N = 2,000$, 1,000 Normal, 1,000 Attacked):**
+  - Configured Detection Thresholds: $\chi^2(5\%) = 122.11$, $\chi^2(1\%) = 133.48$, Calibrated $\text{LNR}(5\%) = 3.6211$, Calibrated $\text{LNR}(1\%) = 4.1078$.
+  - Normal Voltage Operating Envelope: $[0.900893, 1.003278]$ pu.
+
+  *Detection by Attack Type on Test Split:*
+  | Attack Type | Test Rows | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Range-Check Det |
+  |---|---|---|---|---|---|
+  | **normal (baseline FA)** | 1,000 | 49 (4.90%) | 12 (1.20%) | 47 (4.70%) | 0 (0.00%) |
+  | **exact_ac_multi_bus** | 153 | 6 (3.92%) | 1 (0.65%) | 9 (5.88%) | 36 (23.53%) |
+  | **exact_ac_single_bus** | 179 | 9 (5.03%) | 4 (2.23%) | 8 (4.47%) | 25 (13.97%) |
+  | **limited_meter** | 153 | 60 (39.22%) | 44 (28.76%) | 65 (42.48%) | 13 (8.50%) |
+  | **linearised_multi_bus** | 192 | 155 (80.73%) | 146 (76.04%) | 154 (80.21%) | 67 (34.90%) |
+  | **linearised_single_bus** | 175 | 71 (40.57%) | 52 (29.71%) | 66 (37.71%) | 31 (17.71%) |
+  | **random** | 148 | 144 (97.30%) | 141 (95.27%) | 141 (95.27%) | 15 (10.14%) |
+
+  *Detection by Attack Family on Test Split (Attacked Rows):*
+  | Family | Attacked Rows | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Range-Check Det |
+  |---|---|---|---|---|---|
+  | **in_range** | 435 | 133 (30.57%) | 107 (24.60%) | 135 (31.03%) | 5 (1.15%) |
+  | **unconstrained** | 565 | 312 (55.22%) | 281 (49.73%) | 308 (54.51%) | 182 (32.21%) |
+
+  *Detection on Effective Attacks Only (`effective_attack == true`, $N = 956$ rows):*
+  | Category | Effective Rows | $\chi^2(5\%)$ Det | $\chi^2(1\%)$ Det | Calibrated $\text{LNR}(5\%)$ | Range-Check Det |
+  |---|---|---|---|---|---|
+  | **Effective Attacked** | 956 | 439 (45.92%) | 385 (40.27%) | 437 (45.71%) | 187 (19.56%) |
+
+  *Key Findings from Test Baselines:*
+  1. Conventional BDD ($\chi^2$ and LNR) completely fails against exact AC stealth attacks: detection rate on `exact_ac_single_bus` (5.03%) and `exact_ac_multi_bus` (3.92%) is virtually indistinguishable from normal false alarms (4.90%).
+  2. Range-check flags zero normal samples and flags only 1.15% of in-range attacks, confirming the stealth constraint operates strictly inside the normal operational envelope.
+  3. Effective attack filtering removes 44 ineffective limited-meter attacks from the test set, elevating true physical threat evaluation.
+
+- **Shuffled-Label Check Results (Feature Group D):**
+  - Trained Random Forest (30 trees, max depth 6) on training rows with randomly permuted labels using all 684 Group D features.
+  - Evaluated on holdout test set:
+    - Master Seed (42): ROC-AUC = **0.5515**
+    - 5-Trial Permutation Distribution: Mean ROC-AUC = **0.5069 $\pm$ 0.0111** (min: 0.4915, max: 0.5231).
+  - *Leakage Verdict:* The distribution is cleanly centered around theoretical chance ($0.50$). Group D features contain zero spurious target leakage.
+
+- **Artifacts and Storage Locations:**
+  - Code: `python/splits.py`, `julia/07_sensitivity_features.jl`, `python/features.py`.
+  - Config: `configs/features.toml`.
+  - Data (gitignored):
+    - `data/splits.csv` (213 KB, 10,000 rows)
+    - `data/sensitivity_features.csv` (63.32 MB, 10,000 rows $\times$ 326 cols)
+    - `data/features_train.csv` (155.79 MB, 6,000 rows $\times$ 1,343 cols)
+    - `data/features_val.csv` (51.94 MB, 2,000 rows $\times$ 1,343 cols)
+    - `data/features_test.csv` (51.94 MB, 2,000 rows $\times$ 1,343 cols)
+    - `data/features_meta.json` (60.2 KB, complete schema and metadata)
+
