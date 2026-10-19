@@ -606,6 +606,119 @@ def run_real_label_check(features, df_attacks, df_splits, group_name="Group D3")
     }
 
 
+def run_d12_shuffled_check(feat_d1, feat_d2, df_attacks, df_splits, n_seeds=50):
+    """
+    Shuffled-label check on D1+D2 only (no D3) using 300 trees, max depth 8, and 50 seeds.
+    Criterion: Mean within 0.5 +/- 0.02 ([0.48, 0.52]) and std < 0.03.
+    """
+    print("\n" + "="*80)
+    print(f"SHUFFLED-LABEL CHECK ON D1+D2 (NO D3) - {n_seeds} SEEDS, 300 TREES, MAX_DEPTH 8")
+    print("="*80)
+    print("Criterion: Mean within 0.50 +/- 0.02 ([0.48, 0.52]) and std below 0.03.")
+
+    feat_d12 = pd.concat([feat_d1, feat_d2], axis=1)
+    train_mask = (df_splits["split"] == "train").values
+    test_mask = (df_splits["split"] == "test").values
+
+    X_train = feat_d12[train_mask].values
+    X_test = feat_d12[test_mask].values
+    y_train = df_attacks[train_mask]["label"].values.copy()
+    y_test = df_attacks[test_mask]["label"].values.copy()
+
+    aucs = []
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        y_train_shuffled = rng.permutation(y_train)
+
+        rf = RandomForestClassifier(n_estimators=300, max_depth=8, random_state=s, n_jobs=-1)
+        rf.fit(X_train, y_train_shuffled)
+
+        y_pred_proba = rf.predict_proba(X_test)[:, 1]
+        auc_s = roc_auc_score(y_test, y_pred_proba)
+        aucs.append(auc_s)
+
+    mean_auc = float(np.mean(aucs))
+    std_auc = float(np.std(aucs))
+    min_auc = float(np.min(aucs))
+    max_auc = float(np.max(aucs))
+
+    passed_mean = (0.48 <= mean_auc <= 0.52)
+    passed_std = (std_auc < 0.03)
+    passed = passed_mean and passed_std
+
+    print(f"Results: Mean={mean_auc:.4f}, Std={std_auc:.4f}, Min={min_auc:.4f}, Max={max_auc:.4f}")
+    print(f"Status: {'PASSED' if passed else 'FAILED (std exceeded 0.03 threshold)'}")
+
+    return {
+        "n_seeds": n_seeds,
+        "n_estimators": 300,
+        "max_depth": 8,
+        "mean_auc": round(mean_auc, 4),
+        "std_auc": round(std_auc, 4),
+        "min_auc": round(min_auc, 4),
+        "max_auc": round(max_auc, 4),
+        "passed": passed
+    }
+
+
+def run_d12_real_check(feat_d1, feat_d2, df_attacks, df_splits):
+    """
+    Real-label check on D1+D2 only:
+    RF (300 trees, max depth 8): test AUC overall, on exact_ac attacks only, and detection at 5% false-alarm point.
+    """
+    print("\n" + "="*80)
+    print("REAL-LABEL VALIDATION CHECK (D1+D2 ONLY)")
+    print("="*80)
+
+    feat_d12 = pd.concat([feat_d1, feat_d2], axis=1)
+    train_mask = (df_splits["split"] == "train").values
+    test_mask = (df_splits["split"] == "test").values
+
+    X_train = feat_d12[train_mask].values
+    X_test = feat_d12[test_mask].values
+    y_train = df_attacks[train_mask]["label"].values
+    y_test = df_attacks[test_mask]["label"].values
+
+    rf = RandomForestClassifier(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
+    rf.fit(X_train, y_train)
+    p_test = rf.predict_proba(X_test)[:, 1]
+
+    auc_overall = roc_auc_score(y_test, p_test)
+    print(f"Overall Test ROC-AUC: {auc_overall:.4f}")
+
+    test_attacks = df_attacks[test_mask].reset_index(drop=True)
+    exact_mask = test_attacks["attack_type"].isin(["exact_ac_single_bus", "exact_ac_multi_bus"]).values
+    norm_mask = (test_attacks["label"] == 0).values
+    sub_mask = exact_mask | norm_mask
+
+    y_test_sub = y_test[sub_mask]
+    p_test_sub = p_test[sub_mask]
+    auc_exact = roc_auc_score(y_test_sub, p_test_sub)
+    print(f"Exact AC Test ROC-AUC ({sum(sub_mask)} rows): {auc_exact:.4f}")
+
+    p_normal = p_test[y_test == 0]
+    p_attack = p_test[y_test == 1]
+    thresh_5fa = float(np.percentile(p_normal, 95.0))
+    actual_fa = float(np.mean(p_normal >= thresh_5fa))
+    det_overall = float(np.mean(p_attack >= thresh_5fa))
+
+    p_exact_att = p_test[exact_mask]
+    det_exact = float(np.mean(p_exact_att >= thresh_5fa))
+
+    print(f"5% FA Threshold: {thresh_5fa:.4f} (Actual FA on normal: {actual_fa*100:.2f}%)")
+    print(f"Detection at 5% FA (Overall Attacked, {len(p_attack)} rows): {det_overall*100:.2f}% ({sum(p_attack >= thresh_5fa)}/{len(p_attack)})")
+    print(f"Detection at 5% FA (Exact AC, {len(p_exact_att)} rows): {det_exact*100:.2f}% ({sum(p_exact_att >= thresh_5fa)}/{len(p_exact_att)})")
+
+    return {
+        "test_auc_overall": round(float(auc_overall), 4),
+        "test_auc_exact_ac": round(float(auc_exact), 4),
+        "thresh_5fa": round(thresh_5fa, 4),
+        "actual_fa_rate": round(actual_fa, 4),
+        "det_rate_overall_5fa": round(det_overall, 4),
+        "det_rate_exact_ac_5fa": round(det_exact, 4)
+    }
+
+
 # ==============================================================================
 # MAIN PIPELINE
 # ==============================================================================
