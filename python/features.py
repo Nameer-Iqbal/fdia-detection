@@ -719,6 +719,162 @@ def run_d12_real_check(feat_d1, feat_d2, df_attacks, df_splits):
     }
 
 
+def run_d12_unpaired_shuffled_check(feat_d1, feat_d2, df_attacks, df_splits, n_seeds=50):
+    """
+    Shuffled-label check on D1+D2 comparing:
+      (a) Paired test split (all 2,000 rows)
+      (b) Unpaired test split (1 randomly selected row per group_id, 1,000 independent rows)
+    """
+    print("\n" + "="*80)
+    print(f"SHUFFLED-LABEL CHECK ON D1+D2: PAIRED VS UNPAIRED ({n_seeds} SEEDS, 300 TREES, MAX_DEPTH 8)")
+    print("="*80)
+
+    feat_d12 = pd.concat([feat_d1, feat_d2], axis=1)
+    train_mask = (df_splits["split"] == "train").values
+    test_mask = (df_splits["split"] == "test").values
+
+    X_train = feat_d12[train_mask].values
+    X_test = feat_d12[test_mask].values
+    y_train = df_attacks[train_mask]["label"].values.copy()
+    y_test = df_attacks[test_mask]["label"].values.copy()
+    group_ids_test = df_attacks[test_mask]["group_id"].values
+
+    # Unpaired test set: 1 randomly chosen row per group_id
+    rng_group = np.random.default_rng(42)
+    test_group_ids = np.unique(group_ids_test)
+    chosen_indices = np.array([rng_group.choice(np.where(group_ids_test == gid)[0]) for gid in test_group_ids])
+    X_test_unpaired = X_test[chosen_indices]
+    y_test_unpaired = y_test[chosen_indices]
+
+    aucs_paired = []
+    aucs_unpaired = []
+
+    for s in range(n_seeds):
+        rng = np.random.default_rng(s)
+        y_train_shuffled = rng.permutation(y_train)
+        rf = RandomForestClassifier(n_estimators=300, max_depth=8, random_state=s, n_jobs=-1)
+        rf.fit(X_train, y_train_shuffled)
+
+        p_paired = rf.predict_proba(X_test)[:, 1]
+        p_unpaired = p_paired[chosen_indices]
+
+        aucs_paired.append(roc_auc_score(y_test, p_paired))
+        aucs_unpaired.append(roc_auc_score(y_test_unpaired, p_unpaired))
+
+    print(f"(a) Paired (N=2000):   Mean={np.mean(aucs_paired):.4f}, Std={np.std(aucs_paired):.4f}, Min={np.min(aucs_paired):.4f}, Max={np.max(aucs_paired):.4f}")
+    print(f"(b) Unpaired (N=1000): Mean={np.mean(aucs_unpaired):.4f}, Std={np.std(aucs_unpaired):.4f}, Min={np.min(aucs_unpaired):.4f}, Max={np.max(aucs_unpaired):.4f}")
+
+    return {
+        "paired": {
+            "mean": round(float(np.mean(aucs_paired)), 4),
+            "std": round(float(np.std(aucs_paired)), 4),
+            "min": round(float(np.min(aucs_paired)), 4),
+            "max": round(float(np.max(aucs_paired)), 4),
+        },
+        "unpaired": {
+            "mean": round(float(np.mean(aucs_unpaired)), 4),
+            "std": round(float(np.std(aucs_unpaired)), 4),
+            "min": round(float(np.min(aucs_unpaired)), 4),
+            "max": round(float(np.max(aucs_unpaired)), 4),
+        }
+    }
+
+
+def run_group_bootstrap_ci(y_test, p_test, group_ids_test, exact_sub_mask, n_boot=1000):
+    """
+    Computes 95% group bootstrap confidence intervals for overall AUC and exact AC AUC.
+    """
+    unique_groups = np.unique(group_ids_test)
+    n_groups = len(unique_groups)
+    rng_bs = np.random.default_rng(42)
+    group_to_indices = {g: np.where(group_ids_test == g)[0] for g in unique_groups}
+
+    boot_aucs_overall = []
+    boot_aucs_exact = []
+
+    for _ in range(n_boot):
+        sampled_groups = rng_bs.choice(unique_groups, size=n_groups, replace=True)
+        sampled_indices = np.concatenate([group_to_indices[g] for g in sampled_groups])
+
+        y_b = y_test[sampled_indices]
+        p_b = p_test[sampled_indices]
+        if len(np.unique(y_b)) == 2:
+            boot_aucs_overall.append(roc_auc_score(y_b, p_b))
+
+        exact_sub_b = exact_sub_mask[sampled_indices]
+        y_b_exact = y_b[exact_sub_b]
+        p_b_exact = p_b[exact_sub_b]
+        if len(np.unique(y_b_exact)) == 2:
+            boot_aucs_exact.append(roc_auc_score(y_b_exact, p_b_exact))
+
+    return {
+        "overall_95ci": [round(float(np.percentile(boot_aucs_overall, 2.5)), 4),
+                         round(float(np.percentile(boot_aucs_overall, 97.5)), 4)],
+        "exact_95ci": [round(float(np.percentile(boot_aucs_exact, 2.5)), 4),
+                       round(float(np.percentile(boot_aucs_exact, 97.5)), 4)]
+    }
+
+
+def run_trivial_baselines_comparison(df_attacks, df_splits):
+    """
+    Evaluates:
+      1. Range-check baseline
+      2. Per-hour max absolute z-score of x_hat baseline
+    at the 5% false-alarm point on test rows.
+    """
+    train_norm = df_attacks[(df_splits["split"] == "train") & (df_attacks["label"] == 0)]
+    test_meta = df_attacks[df_splits["split"] == "test"].reset_index(drop=True)
+    norm_mask = (test_meta["label"] == 0).values
+    exact_mask = test_meta["attack_type"].isin(["exact_ac_single_bus", "exact_ac_multi_bus"]).values
+
+    v_cols = [f"x_hat_{i}" for i in range(33, 66)]
+    v_min_norm = float(train_norm[v_cols].min().min())
+    v_max_norm = float(train_norm[v_cols].max().max())
+
+    test_v = test_meta[v_cols].values
+    range_flag = (test_v < v_min_norm).any(axis=1) | (test_v > v_max_norm).any(axis=1)
+
+    # Hourly max-Z baseline
+    x_cols = [f"x_hat_{i}" for i in range(1, 66)]
+    hourly_stats = {}
+    for h in range(24):
+        sub = train_norm[train_norm["hour_of_day"] == h][x_cols]
+        mu = sub.mean(axis=0).values
+        std = sub.std(axis=0).values.copy()
+        std[std < 1e-9] = 1.0
+        hourly_stats[h] = (mu, std)
+
+    max_abs_z = np.zeros(len(test_meta))
+    for idx, row in test_meta.iterrows():
+        h = int(row["hour_of_day"])
+        mu, std = hourly_stats[h]
+        x_val = row[x_cols].values.astype(float)
+        max_abs_z[idx] = np.max(np.abs((x_val - mu) / std))
+
+    z_norm = max_abs_z[norm_mask]
+    z_thresh_5fa = float(np.percentile(z_norm, 95.0))
+
+    return {
+        "range_check": {
+            "v_min": v_min_norm,
+            "v_max": v_max_norm,
+            "fa_normal": float(np.mean(range_flag[norm_mask])),
+            "det_overall": float(np.mean(range_flag[~norm_mask])),
+            "det_exact_ac": float(np.mean(range_flag[exact_mask])),
+            "det_in_range": float(np.mean(range_flag[exact_mask & (test_meta["family"] == "in_range")])),
+            "det_unconstrained": float(np.mean(range_flag[exact_mask & (test_meta["family"] == "unconstrained")])),
+        },
+        "max_z_xhat": {
+            "thresh_5fa": z_thresh_5fa,
+            "fa_normal": float(np.mean(max_abs_z[norm_mask] >= z_thresh_5fa)),
+            "det_overall": float(np.mean(max_abs_z[~norm_mask] >= z_thresh_5fa)),
+            "det_exact_ac": float(np.mean(max_abs_z[exact_mask] >= z_thresh_5fa)),
+            "det_in_range": float(np.mean(max_abs_z[exact_mask & (test_meta["family"] == "in_range")] >= z_thresh_5fa)),
+            "det_unconstrained": float(np.mean(max_abs_z[exact_mask & (test_meta["family"] == "unconstrained")] >= z_thresh_5fa)),
+        }
+    }
+
+
 # ==============================================================================
 # MAIN PIPELINE
 # ==============================================================================
