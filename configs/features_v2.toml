@@ -1,0 +1,42 @@
+# ==============================================================================
+# Feature Engineering & Dataset Split Configuration (Dataset v2)
+# IEEE 33-Bus Radial Distribution System
+# ==============================================================================
+
+[general]
+seed = 42
+dataset_path = "data/attacks_full_v2.csv"
+splits_output_path = "data/splits_v2.csv"
+features_output_path = "data/features_v2.csv"
+features_meta_output_path = "data/features_meta_v2.json"
+h_matrix_path = "data/H_example_v2.csv"
+case_path = "data/cases/case33bw.m"
+bdd_config_path = "configs/bdd_v2.toml"
+
+[splits]
+# Group-aware split ratios (by group_id, 5000 total groups)
+train_ratio = 0.60
+val_ratio = 0.20
+test_ratio = 0.20
+
+train_attack_types = [
+    "random",
+    "linearised_single_bus",
+    "linearised_multi_bus"
+]
+
+held_out_attack_types = [
+    "exact_ac_single_bus",
+    "exact_ac_multi_bus",
+    "limited_meter"
+]
+
+[noise]
+voltmeter_std = 0.005
+power_injection_active_std = 0.010
+power_injection_reactive_std = 0.010
+power_flow_active_std = 0.008
+power_flow_reactive_std = 0.008
+
+[features]
+save_format = "csv"

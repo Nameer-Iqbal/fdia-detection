@@ -114,7 +114,8 @@ def report_split_statistics(df, df_splits):
 
 
 def main():
-    cfg = load_config()
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/features.toml"
+    cfg = load_config(config_path)
     dataset_path = cfg["general"]["dataset_path"]
     out_splits_path = cfg["general"]["splits_output_path"]
 

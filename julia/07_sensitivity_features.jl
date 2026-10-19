@@ -26,7 +26,10 @@ function main()
     println("Task 7: Generating Sensitivity Features (Per-Row Exact H, Leverage & Omega Diag)")
     println("================================================================================")
 
-    data_path = normpath(joinpath(@__DIR__, "..", "data", "attacks_full.csv"))
+    data_rel = length(ARGS) >= 1 ? ARGS[1] : joinpath("data", "attacks_full.csv")
+    out_rel = length(ARGS) >= 2 ? ARGS[2] : joinpath("data", "sensitivity_features.csv")
+    data_path = isabspath(data_rel) ? data_rel : normpath(joinpath(@__DIR__, "..", data_rel))
+    out_path = isabspath(out_rel) ? out_rel : normpath(joinpath(@__DIR__, "..", out_rel))
     if !isfile(data_path)
         error("Dataset file not found: $data_path")
     end
@@ -134,7 +137,6 @@ function main()
         df_sens[!, Symbol("omega_diag_$i")] = Omega_mat[:, i]
     end
 
-    out_path = normpath(joinpath(@__DIR__, "..", "data", "sensitivity_features.csv"))
     println("Saving to $out_path...")
     t_save = time()
     CSV.write(out_path, df_sens)

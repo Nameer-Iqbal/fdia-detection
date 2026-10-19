@@ -79,13 +79,24 @@ function main()
     println("================================================================================")
 
     # 1. Load Configurations
-    config_path = normpath(joinpath(@__DIR__, "..", "configs", "dataset_attacks.toml"))
+    config_file_arg = "dataset_attacks.toml"
+    for (idx, arg) in enumerate(ARGS)
+        if arg == "--config" && idx < length(ARGS)
+            config_file_arg = ARGS[idx + 1]
+        elseif !startswith(arg, "-") && idx == 1
+            config_file_arg = arg
+        end
+    end
+    config_path = isabspath(config_file_arg) ? config_file_arg : normpath(joinpath(@__DIR__, "..", "configs", config_file_arg))
+    if !isfile(config_path) && isfile(config_file_arg)
+        config_path = normpath(config_file_arg)
+    end
     if !isfile(config_path)
         error("Config file not found: $config_path")
     end
     cfg = TOML.parsefile(config_path)
 
-    bdd_cfg_path = normpath(joinpath(@__DIR__, "..", "configs", "bdd.toml"))
+    bdd_cfg_path = normpath(joinpath(@__DIR__, "..", cfg["general"]["bdd_config_path"]))
     if !isfile(bdd_cfg_path)
         error("BDD config file not found: $bdd_cfg_path")
     end
@@ -182,6 +193,7 @@ function main()
     family_cols = Vector{String}(undef, total_rows)
     magnitudes = zeros(Float64, total_rows)
     shift_magnitudes_pu = zeros(Float64, total_rows)
+    shift_sigmas = zeros(Float64, total_rows)
     shift_ratios = zeros(Float64, total_rows)
     signs = zeros(Int, total_rows)
     effective_attacks = falses(total_rows)
@@ -198,6 +210,26 @@ function main()
     Mask_mat = zeros(Int, total_rows, m)
     C_mat = zeros(Float64, total_rows, n)
     X_true_mat = zeros(Float64, total_rows, n)
+
+    # Precompute per-hour normal state standard deviations for all 65 states across df_base
+    hourly_state_std = zeros(Float64, 24, n)
+    for h in 0:23
+        h_mask = [mod(df_base[row, :time_idx] - 1, 24) == h for row in 1:N_base]
+        sub_df = df_base[h_mask, :]
+        for i = 2:33
+            hourly_state_std[h + 1, i - 1] = std(sub_df[!, Symbol("theta_est_$i")])
+        end
+        for i = 1:33
+            hourly_state_std[h + 1, 32 + i] = std(sub_df[!, Symbol("v_est_$i")])
+        end
+    end
+    for h in 1:24, j in 1:n
+        if hourly_state_std[h, j] < 1e-9
+            hourly_state_std[h, j] = 1.0
+        end
+    end
+    is_log_uniform = get(cfg["parameters"], "distribution", "uniform") == "log_uniform"
+    println("State perturbation distribution: ", is_log_uniform ? "Log-Uniform" : "Uniform", " in [", mag_min, ", ", mag_max, "]")
 
     # Stats counters
     type_counts = Dict(t => 0 for t in attack_types)
@@ -288,8 +320,13 @@ function main()
         fam_str = string(fam)
         family_counts[fam_str] += 1
 
-        # Randomize magnitude in [mag_min, mag_max]
-        alpha_V = mag_min + rand(rng) * (mag_max - mag_min)
+        # Magnitude sampling: log-uniform or uniform
+        if is_log_uniform
+            log_alpha = log(mag_min) + rand(rng) * (log(mag_max) - log(mag_min))
+            alpha_V = exp(log_alpha)
+        else
+            alpha_V = mag_min + rand(rng) * (mag_max - mag_min)
+        end
         alpha_theta = alpha_V * theta_ratio
 
         # Generate attack depending on type
@@ -304,22 +341,26 @@ function main()
             target_bus = rand(rng, cand_buses)
             att_res = generate_single_bus_attack(z_base_g, x_hat_base_g, se, H_base_g, cfg;
                                                  bus = target_bus, alpha_V = alpha_V, alpha_theta = alpha_theta,
-                                                 formulation = :linearised, family = fam, rng = rng)
+                                                 formulation = :linearised, family = fam, rng = rng,
+                                                 v_min = v_norm_min, v_max = v_norm_max)
         elseif att_type == "linearised_multi_bus"
             buses = rand(rng, target_sets)
             att_res = generate_multibus_attack(z_base_g, x_hat_base_g, se, H_base_g, cfg;
                                                target_buses = buses, alpha_V = alpha_V, alpha_theta = alpha_theta,
-                                               formulation = :linearised, family = fam, rng = rng)
+                                               formulation = :linearised, family = fam, rng = rng,
+                                               v_min = v_norm_min, v_max = v_norm_max)
         elseif att_type == "exact_ac_single_bus"
             target_bus = rand(rng, cand_buses)
             att_res = generate_single_bus_attack(z_base_g, x_hat_base_g, se, H_base_g, cfg;
                                                  bus = target_bus, alpha_V = alpha_V, alpha_theta = alpha_theta,
-                                                 formulation = :exact_ac, family = fam, rng = rng)
+                                                 formulation = :exact_ac, family = fam, rng = rng,
+                                                 v_min = v_norm_min, v_max = v_norm_max)
         elseif att_type == "exact_ac_multi_bus"
             buses = rand(rng, target_sets)
             att_res = generate_multibus_attack(z_base_g, x_hat_base_g, se, H_base_g, cfg;
                                                target_buses = buses, alpha_V = alpha_V, alpha_theta = alpha_theta,
-                                               formulation = :exact_ac, family = fam, rng = rng)
+                                               formulation = :exact_ac, family = fam, rng = rng,
+                                               v_min = v_norm_min, v_max = v_norm_max)
         elseif att_type == "limited_meter"
             buses = rand(rng, target_sets)
             M_bgt = rand(rng, lim_budgets)
@@ -327,7 +368,8 @@ function main()
             att_res = generate_limited_meter_ls_attack(z_base_g, x_hat_base_g, H_base_g, W_mat, cfg;
                                                       meter_subset = S_sub, M = M_bgt,
                                                       target_buses = buses, alpha_V = alpha_V, alpha_theta = alpha_theta,
-                                                      family = fam, lambda = lim_lambda, rng = rng)
+                                                      family = fam, lambda = lim_lambda, rng = rng,
+                                                      v_min = v_norm_min, v_max = v_norm_max)
         else
             error("Unknown attack type: $att_type")
         end
@@ -355,6 +397,16 @@ function main()
         family_cols[row_ptr] = fam_str
         magnitudes[row_ptr] = Float64(att_res.metadata["magnitude"])
         shift_magnitudes_pu[row_ptr] = (att_type == "random") ? 0.0 : Float64(att_res.metadata["magnitude"])
+
+        # Compute shift in sigmas
+        c_vec = att_res.c
+        h_idx = Int(hr) + 1
+        shifted_indices = findall(!iszero, c_vec)
+        if isempty(shifted_indices)
+            shift_sigmas[row_ptr] = 0.0
+        else
+            shift_sigmas[row_ptr] = maximum(abs.(c_vec[shifted_indices]) ./ hourly_state_std[h_idx, shifted_indices])
+        end
         if haskey(att_res.metadata, "shift_ratio")
             sr = Float64(att_res.metadata["shift_ratio"])
             shift_ratios[row_ptr] = sr
@@ -405,6 +457,7 @@ function main()
         family = family_cols,
         magnitude = magnitudes,
         shift_magnitude_pu = shift_magnitudes_pu,
+        shift_sigmas = shift_sigmas,
         shift_ratio = shift_ratios,
         sign = signs,
         effective_attack = effective_attacks,
@@ -465,6 +518,7 @@ function main()
         "family",
         "magnitude",
         "shift_magnitude_pu",
+        "shift_sigmas",
         "shift_ratio",
         "sign",
         "effective_attack",

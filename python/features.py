@@ -35,6 +35,7 @@ FORBIDDEN_COLUMNS = {
     "family",
     "magnitude",
     "shift_magnitude_pu",
+    "shift_sigmas",
     "shift_ratio",
     "sign",
     "effective_attack",
@@ -879,7 +880,9 @@ def run_trivial_baselines_comparison(df_attacks, df_splits):
 # MAIN PIPELINE
 # ==============================================================================
 def main():
-    cfg = load_config()
+    import sys
+    config_path = sys.argv[1] if len(sys.argv) > 1 else "configs/features.toml"
+    cfg = load_config(config_path)
     bdd_cfg_path = cfg["general"]["bdd_config_path"]
     with open(bdd_cfg_path, "rb") as f:
         bdd_cfg = tomllib.load(f)
@@ -887,7 +890,7 @@ def main():
     dataset_path = cfg["general"]["dataset_path"]
     splits_path = cfg["general"]["splits_output_path"]
     case_path = cfg["general"]["case_path"]
-    sens_path = "data/sensitivity_features.csv"
+    sens_path = "data/sensitivity_features_v2.csv" if "v2" in config_path else "data/sensitivity_features.csv"
 
     print("="*80)
     print("TASK 7: COMPLETE FEATURE EXTRACTION & VALIDATION PIPELINE")
@@ -947,9 +950,10 @@ def main():
     df_with_meta["split"] = df_splits["split"].values
     df_with_meta["split_unseen"] = df_splits["split_unseen"].values
 
+    suffix = "_v2" if "v2" in config_path else ""
     for s in ["train", "val", "test"]:
         sub_df = df_with_meta[df_with_meta["split"] == s]
-        out_csv = f"data/features_{s}.csv"
+        out_csv = f"data/features_{s}{suffix}.csv"
         print(f"Saving {s} split ({len(sub_df)} rows x {sub_df.shape[1]} cols) to {out_csv}...")
         sub_df.to_csv(out_csv, index=False)
         print(f"  Saved {out_csv} ({os.path.getsize(out_csv)/(1024*1024):.2f} MB).")

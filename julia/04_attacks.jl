@@ -104,7 +104,9 @@ function sample_c_element(
     alpha_V::Float64,
     alpha_theta::Float64;
     family::Symbol = :unconstrained,
-    rng::AbstractRNG = Random.GLOBAL_RNG
+    rng::AbstractRNG = Random.GLOBAL_RNG,
+    v_min::Float64 = V_NORMAL_MIN,
+    v_max::Float64 = V_NORMAL_MAX
 )
     sign_v = rand(rng, (-1.0, 1.0))
     sign_th = rand(rng, (-1.0, 1.0))
@@ -115,17 +117,17 @@ function sample_c_element(
 
     if family == :in_range
         # Target voltage v_target = v_hat_i + cV
-        # Must satisfy V_NORMAL_MIN <= v_hat_i + cV <= V_NORMAL_MAX
-        if (v_hat_i + cV < V_NORMAL_MIN) || (v_hat_i + cV > V_NORMAL_MAX)
+        # Must satisfy v_min <= v_hat_i + cV <= v_max
+        if (v_hat_i + cV < v_min) || (v_hat_i + cV > v_max)
             # Try flipping the sign
-            if (v_hat_i - cV >= V_NORMAL_MIN) && (v_hat_i - cV <= V_NORMAL_MAX)
+            if (v_hat_i - cV >= v_min) && (v_hat_i - cV <= v_max)
                 cV = -cV
                 sign_v = -sign_v
                 was_resampled = true
             else
                 # If both signs violate, scale down magnitude to fit boundary safely
-                margin_up = max(0.0, V_NORMAL_MAX - v_hat_i)
-                margin_down = max(0.0, v_hat_i - V_NORMAL_MIN)
+                margin_up = max(0.0, v_max - v_hat_i)
+                margin_down = max(0.0, v_hat_i - v_min)
                 if margin_up > margin_down
                     cV = 0.95 * margin_up
                     sign_v = 1.0
@@ -261,12 +263,14 @@ function generate_single_bus_attack(
     alpha_theta::Float64 = 0.015,
     formulation::Symbol = :exact_ac,
     family::Symbol = :unconstrained,
-    rng::AbstractRNG = Random.GLOBAL_RNG
+    rng::AbstractRNG = Random.GLOBAL_RNG,
+    v_min::Float64 = V_NORMAL_MIN,
+    v_max::Float64 = V_NORMAL_MAX
 )
     V_hat, _ = state_to_full_polar(x_hat)
     v_base_bus = V_hat[bus]
 
-    draw = sample_c_element(v_base_bus, alpha_V, alpha_theta; family = family, rng = rng)
+    draw = sample_c_element(v_base_bus, alpha_V, alpha_theta; family = family, rng = rng, v_min = v_min, v_max = v_max)
 
     c = zeros(65)
     c[32 + bus] = draw.cV
@@ -324,7 +328,9 @@ function generate_multibus_attack(
     alpha_theta::Float64 = 0.015,
     formulation::Symbol = :exact_ac,
     family::Symbol = :unconstrained,
-    rng::AbstractRNG = Random.GLOBAL_RNG
+    rng::AbstractRNG = Random.GLOBAL_RNG,
+    v_min::Float64 = V_NORMAL_MIN,
+    v_max::Float64 = V_NORMAL_MAX
 )
     V_hat, _ = state_to_full_polar(x_hat)
     c = zeros(65)
@@ -332,7 +338,7 @@ function generate_multibus_attack(
     overall_sign = 0
 
     for b in target_buses
-        draw = sample_c_element(V_hat[b], alpha_V, alpha_theta; family = family, rng = rng)
+        draw = sample_c_element(V_hat[b], alpha_V, alpha_theta; family = family, rng = rng, v_min = v_min, v_max = v_max)
         c[32 + b] = draw.cV
         if b > 1
             c[b - 1] = draw.cTh
@@ -456,7 +462,9 @@ function generate_limited_meter_ls_attack(
     alpha_theta::Float64 = 0.015,
     family::Symbol = :unconstrained,
     lambda::Float64 = 1e5,
-    rng::AbstractRNG = Random.GLOBAL_RNG
+    rng::AbstractRNG = Random.GLOBAL_RNG,
+    v_min::Float64 = V_NORMAL_MIN,
+    v_max::Float64 = V_NORMAL_MAX
 )
     m = length(z)
     n = size(H, 2)
@@ -477,7 +485,7 @@ function generate_limited_meter_ls_attack(
     resample_any = false
 
     for b in target_buses
-        draw = sample_c_element(V_hat[b], alpha_V, alpha_theta; family = family, rng = rng)
+        draw = sample_c_element(V_hat[b], alpha_V, alpha_theta; family = family, rng = rng, v_min = v_min, v_max = v_max)
         c0[32 + b] = draw.cV
         if b > 1
             c0[b - 1] = draw.cTh

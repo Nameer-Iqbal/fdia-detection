@@ -1,0 +1,32 @@
+# ==============================================================================
+# Bad Data Detection (BDD) Configuration & Calibration Thresholds (Dataset v2)
+# System: IEEE 33-Bus Radial Feeder (m = 163 Measurements, n = 65 States, df = 98)
+# Calibrated on N = 5000 Normal Operating Points (Dataset v2)
+# ==============================================================================
+
+[system]
+num_measurements = 163
+num_states = 65
+degrees_of_freedom = 98
+
+[chi_square]
+# Chi-Square distribution critical values for df = 98:
+alpha_05_threshold = 122.1077
+alpha_01_threshold = 133.4757
+
+[largest_normalized_residual]
+# Empirical quantiles on N = 5000 unattacked normal dataset v2:
+empirical_threshold_05 = 3.5995
+empirical_threshold_01 = 4.0238
+
+# Bonferroni-style analytical thresholds for m = 163:
+bonferroni_threshold_05 = 3.6095
+bonferroni_threshold_01 = 4.0076
+
+# Uncalibrated legacy textbook threshold:
+legacy_threshold = 3.0
+
+[range_check]
+# Global voltage bounds observed in N = 5000 normal dataset v2:
+voltage_min_normal = 0.9006278
+voltage_max_normal = 1.0034669

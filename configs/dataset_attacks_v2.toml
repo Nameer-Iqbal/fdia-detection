@@ -1,0 +1,67 @@
+# ==============================================================================
+# Labelled FDI Attack Dataset Generation Configuration (Dataset v2)
+# IEEE 33-Bus System (m = 163 measurements, n = 65 states)
+# ==============================================================================
+
+[general]
+seed = 42
+base_dataset_path = "data/normal_data_v2.csv"
+output_dataset_path = "data/attacks_full_v2.csv"
+output_metadata_path = "data/attacks_meta_v2.json"
+case_path = "data/cases/case33bw.m"
+bdd_config_path = "configs/bdd_v2.toml"
+
+# Number of base operating points to use (5000 -> 10,000 total rows: 5000 normal, 5000 attacked)
+num_base_samples = 5000
+
+# Convergence criteria for state estimation re-run
+se_tolerance = 1e-8
+se_max_iter = 100
+
+[attack_mix]
+# Balanced probability weights across the 6 attack types (equal 1/6 probability each)
+types = [
+    "random",
+    "linearised_single_bus",
+    "linearised_multi_bus",
+    "exact_ac_single_bus",
+    "exact_ac_multi_bus",
+    "limited_meter"
+]
+weights = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+[attack_families]
+# 50% in-range, 50% unconstrained
+families = ["in_range", "unconstrained"]
+weights = [0.5, 0.5]
+
+[parameters]
+# Voltage magnitude perturbation range [alpha_V_min, alpha_V_max]
+# Log-uniform between 0.05% (0.0005 pu) and 5.0% (0.0500 pu)
+alpha_V_min = 0.0005
+alpha_V_max = 0.0500
+distribution = "log_uniform"
+
+# Angle perturbation scaling factor relative to alpha_V
+alpha_theta_ratio = 0.5
+
+# Multi-bus attack candidate bus sets
+multibus_target_sets = [
+    [14, 15, 16, 17, 18],     # End of main feeder
+    [6, 7, 8, 9, 10],         # Mid feeder
+    [2, 3, 4, 5],             # Substation root
+    [19, 20, 21, 22],         # Lateral branch 1
+    [26, 27, 28, 29, 30],     # Lateral branch 2
+    [5, 12, 21, 30]           # Distributed random set
+]
+
+# Single-bus attack candidate buses
+single_bus_candidates = [2, 6, 10, 14, 18, 22, 25, 28, 32]
+
+# Random attack parameters
+random_meter_counts = [5, 10, 15, 20]
+random_noise_multipliers = [3.0, 5.0, 8.0, 10.0]
+
+# Limited-meter attacker parameters
+limited_meter_budgets = [10, 20, 40, 60, 80, 120]
+limited_meter_lambda = 1e5

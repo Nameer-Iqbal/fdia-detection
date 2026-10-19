@@ -10,11 +10,13 @@ voltage_limit_max = 1.05
 
 [attack_magnitude]
 # Relative state perturbation scales (fraction of nominal / radians)
-voltage_magnitude_min = 0.01  # 1% shift
-voltage_magnitude_max = 0.10  # 10% shift
-voltage_angle_min = 0.005     # 0.005 rad (~0.29 deg)
-voltage_angle_max = 0.050     # 0.050 rad (~2.86 deg)
-magnitude_levels = [0.01, 0.02, 0.03, 0.05, 0.08, 0.10]
+# Log-uniform between 0.05% and 5% of voltage (angle shift scaled correspondingly)
+distribution = "log_uniform"
+voltage_magnitude_min = 0.0005  # 0.05% shift (noise floor)
+voltage_magnitude_max = 0.0500  # 5.0% shift
+voltage_angle_min = 0.00025     # 0.00025 rad (~0.014 deg)
+voltage_angle_max = 0.02500     # 0.02500 rad (~1.43 deg)
+magnitude_levels = [0.0005, 0.001, 0.002, 0.005, 0.01, 0.02, 0.05]
 
 [random_attack]
 meter_counts = [5, 10, 20]

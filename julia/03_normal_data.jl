@@ -54,7 +54,18 @@ function main()
     # -------------------------------------------------------------------------
     # PART 1: Load Configuration
     # -------------------------------------------------------------------------
-    config_path = normpath(joinpath(@__DIR__, "..", "configs", "dataset.toml"))
+    config_file_arg = "dataset.toml"
+    for (idx, arg) in enumerate(ARGS)
+        if arg == "--config" && idx < length(ARGS)
+            config_file_arg = ARGS[idx + 1]
+        elseif !startswith(arg, "-") && idx == 1
+            config_file_arg = arg
+        end
+    end
+    config_path = isabspath(config_file_arg) ? config_file_arg : normpath(joinpath(@__DIR__, "..", "configs", config_file_arg))
+    if !isfile(config_path) && isfile(config_file_arg)
+        config_path = normpath(config_file_arg)
+    end
     if !isfile(config_path)
         error("Config file not found: $config_path")
     end
@@ -162,15 +173,35 @@ function main()
     # -------------------------------------------------------------------------
     rng = MersenneTwister(master_seed)
 
+    has_day_var = haskey(cfg, "day_variability")
+    day_scale_std = has_day_var ? Float64(get(cfg["day_variability"], "day_scale_std", 0.05)) : 0.0
+    day_peak_jitter_max = has_day_var ? Float64(get(cfg["day_variability"], "day_peak_jitter_max", 1.0)) : 0.0
+
+    num_days = ceil(Int, N_samples / samples_per_day)
+    day_scales = day_scale_std > 0 ? (1.0 .+ day_scale_std .* randn(rng, num_days)) : ones(num_days)
+    day_jitters = day_peak_jitter_max > 0 ? ((2.0 .* rand(rng, num_days) .- 1.0) .* day_peak_jitter_max) : zeros(num_days)
+
+    if has_day_var
+        println("Day-to-day variability enabled:")
+        println("  Day scale factor Gaussian std: ", day_scale_std * 100, "%")
+        println("  Day peak jitter max range:     +/- ", day_peak_jitter_max, " hours")
+    end
+
     # Diurnal profile helper function:
-    # Continuous, smooth smoothed-triangle profile mapping cleanly across [lf_min, lf_max]
-    # Peak at 20:00, trough at 08:00 without flat floor clipping
+    # Continuous, smooth smoothed-triangle profile mapping across [lf_min, lf_max]
+    # with day-level scaling and peak hour jitter
     function compute_diurnal_load_factor(t_idx)
+        day_idx = div(t_idx - 1, samples_per_day) + 1
+        d_scale = (day_idx <= length(day_scales)) ? day_scales[day_idx] : 1.0
+        d_jitter = (day_idx <= length(day_jitters)) ? day_jitters[day_idx] : 0.0
+
         hour = mod((t_idx - 1) * (24.0 / samples_per_day), 24.0)
-        theta = 2pi * (hour - 14.0) / 24.0
+        midpoint = 14.0 + d_jitter
+        theta = 2pi * (hour - midpoint) / 24.0
         raw_val = asin(smoothness * sin(theta))
         norm_val = (raw_val + asin(smoothness)) / (2.0 * asin(smoothness))
-        return lf_min + norm_val * (lf_max - lf_min)
+        base_lf = lf_min + norm_val * (lf_max - lf_min)
+        return base_lf * d_scale
     end
 
     # Print 5-bin histogram for N = 200 (Part 0 validation)
