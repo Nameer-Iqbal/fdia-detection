@@ -140,7 +140,32 @@ def main():
     z_thresh_5fa = float(np.percentile(max_abs_z[norm_mask_test], 95.0))
     z_flags = max_abs_z >= z_thresh_5fa
 
-    # 5. Random Forest on D1+D2
+    # 5. Mahalanobis Baseline (Ledoit-Wolf Shrinkage Covariance on x_hat)
+    from sklearn.covariance import LedoitWolf
+    hourly_lw = {}
+    shrinkage_intensities = []
+    for h in range(24):
+        sub = train_norm[train_norm["hour_of_day"] == h][x_cols].values
+        lw = LedoitWolf().fit(sub)
+        hourly_lw[h] = lw
+        shrinkage_intensities.append(lw.shrinkage_)
+
+    print(f"Ledoit-Wolf Shrinkage Intensities on x_hat (24h): mean={np.mean(shrinkage_intensities):.4f}, range=[{np.min(shrinkage_intensities):.4f}, {np.max(shrinkage_intensities):.4f}]")
+
+    test_x = test_meta[x_cols].values
+    test_hours = test_meta["hour_of_day"].values
+    mahal_dist = np.zeros(len(test_meta))
+    for idx in range(len(test_meta)):
+        h = int(test_hours[idx])
+        lw = hourly_lw[h]
+        diff = test_x[idx:idx+1] - lw.location_
+        dist_sq = diff @ lw.precision_ @ diff.T
+        mahal_dist[idx] = np.sqrt(dist_sq[0, 0])
+
+    mahal_thresh_5fa = float(np.percentile(mahal_dist[norm_mask_test], 95.0))
+    mahal_flags = mahal_dist >= mahal_thresh_5fa
+
+    # 6. Random Forest on D1+D2
     print("Training standard RF on D1+D2 (300 trees, max_depth=8, seed=42)...")
     rf_std = RandomForestClassifier(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
     rf_std.fit(df_train[d12_cols].values, y_train)
@@ -155,6 +180,7 @@ def main():
         "Calibrated LNR": lnr_scores,
         "Range-Check (Envelope)": rc_scores,
         "Per-Hour Max-Z": max_abs_z,
+        "Mahalanobis (LedoitWolf)": mahal_dist,
         "RF (D1+D2)": rf_std_scores
     }
 
@@ -164,6 +190,7 @@ def main():
         "Calibrated LNR": lnr_flags,
         "Range-Check (Envelope)": rc_flags,
         "Per-Hour Max-Z": z_flags,
+        "Mahalanobis (LedoitWolf)": mahal_flags,
         "RF (D1+D2)": rf_std_flags
     }
 
@@ -379,5 +406,100 @@ def main():
         ds, cids = res["det_sub1"]
         print(f"{name:<30} | {ao:.4f} [{ciao[0]:.4f}, {ciao[1]:.4f}]   | {ae:.4f} [{ciae[0]:.4f}, {ciae[1]:.4f}]   | {da:5.2f}% [{cida[0]:.2f}%, {cida[1]:.2f}%]   | {de:5.2f}% [{cide[0]:.2f}%, {cide[1]:.2f}%]   | {ds:5.2f}% [{cids[0]:.2f}%, {cids[1]:.2f}%]")
 
+    # --------------------------------------------------------------------------
+    # PART 4: FINGERPRINT TEST (NORMAL CONTROL ROWS WITH c = 0 ATTACK PATH)
+    # --------------------------------------------------------------------------
+    print("\n" + "=" * 80)
+    print("PART 4: FINGERPRINT TEST (NORMAL CONTROL ROWS GENERATED VIA c = 0 ATTACK PATH)")
+    print("=" * 80)
+    import os
+    ctrl_path = "data/controls_normal_v2.csv"
+    if not os.path.exists(ctrl_path):
+        print(f"Warning: {ctrl_path} not found. Run julia/08_generate_controls.jl first.")
+        return
+
+    df_ctrl = pd.read_csv(ctrl_path)
+    ctrl_by_group = {row["group_id"]: row for _, row in df_ctrl.iterrows()}
+
+    z_cols_raw = [f"z_{i}" for i in range(1, 164)]
+    x_cols_raw = [f"x_hat_{i}" for i in range(1, 66)]
+
+    hourly_means_z = {}
+    hourly_means_x = {}
+    for h in range(24):
+        sub = train_norm[train_norm["hour_of_day"] == h]
+        hourly_means_z[h] = sub[z_cols_raw].mean(axis=0).values
+        hourly_means_x[h] = sub[x_cols_raw].mean(axis=0).values
+
+    def extract_d12_from_raw(row_series):
+        h = int(row_series["hour_of_day"])
+        z_val = row_series[z_cols_raw].values.astype(float)
+        x_val = row_series[x_cols_raw].values.astype(float)
+        dev_z = z_val - hourly_means_z[h]
+        dev_x = x_val - hourly_means_x[h]
+        return np.concatenate([z_val, x_val, dev_z, dev_x])
+
+    test_groups = df_splits[df_splits["split"] == "test"]["group_id"].unique()
+    X_test_ctrl = np.zeros((len(test_groups), 456))
+    for i, g in enumerate(test_groups):
+        X_test_ctrl[i] = extract_d12_from_raw(ctrl_by_group[g])
+
+    p_ctrl_test = rf_std.predict_proba(X_test_ctrl)[:, 1]
+    fa_rate_ctrl = np.mean(p_ctrl_test >= rf_std_thresh_5fa) * 100.0
+
+    print(f"\n--- (1) Original RF Scoring on Control Test Rows (N={len(test_groups)}) ---")
+    print(f"5% FA Threshold from Original Normal Test Rows: {rf_std_thresh_5fa:.4f}")
+    print(f"Original Normal Test False Alarm Rate:           5.00% (50 / 1000)")
+    print(f"Control Normal Test False Alarm Rate:            {fa_rate_ctrl:.2f}% ({np.sum(p_ctrl_test >= rf_std_thresh_5fa)} / {len(test_groups)})")
+    print(f"Mean Score on Original Normal Test:              {np.mean(rf_std.predict_proba(df_test[d12_cols].values[norm_mask_test])[:, 1]):.4f}")
+    print(f"Mean Score on Control Normal Test:               {np.mean(p_ctrl_test):.4f}")
+
+    print(f"\n--- (2) Fresh RF Trained with Controls REPLACING Original Normal Rows ---")
+    train_groups = df_splits[df_splits["split"] == "train"]["group_id"].unique()
+    ctrl_train_feat_by_g = {g: extract_d12_from_raw(ctrl_by_group[g]) for g in train_groups}
+
+    X_train_replaced = df_train[d12_cols].values.copy()
+    for i, row in df_train.iterrows():
+        if row["label"] == 0:
+            g = int(row["group_id"])
+            X_train_replaced[i] = ctrl_train_feat_by_g[g]
+
+    ctrl_test_feat_by_g = {g: extract_d12_from_raw(ctrl_by_group[g]) for g in test_groups}
+    X_test_replaced = df_test[d12_cols].values.copy()
+    for i, row in df_test.iterrows():
+        if row["label"] == 0:
+            g = int(row["group_id"])
+            X_test_replaced[i] = ctrl_test_feat_by_g[g]
+
+    rf_ctrl = RandomForestClassifier(n_estimators=300, max_depth=8, random_state=42, n_jobs=-1)
+    rf_ctrl.fit(X_train_replaced, y_train)
+    scores_ctrl_model = rf_ctrl.predict_proba(X_test_replaced)[:, 1]
+
+    thresh_ctrl_5fa = float(np.percentile(scores_ctrl_model[norm_mask_test], 95.0))
+    flags_ctrl_model = scores_ctrl_model >= thresh_ctrl_5fa
+
+    auc_ctrl_o = roc_auc_score(y_test, scores_ctrl_model)
+    ci_ctrl_o = group_bootstrap_ci(y_test, scores_ctrl_model, group_ids_test, is_binary_flag=False)
+
+    auc_ctrl_e = roc_auc_score(y_test[exact_sub_test], scores_ctrl_model[exact_sub_test])
+    ci_ctrl_e = group_bootstrap_ci(y_test, scores_ctrl_model, group_ids_test, is_binary_flag=False, mask=exact_sub_test)
+
+    det_ctrl_all = np.mean(flags_ctrl_model[att_mask_test]) * 100.0
+    ci_det_ctrl_all = group_bootstrap_ci(y_test, flags_ctrl_model, group_ids_test, is_binary_flag=True, mask=att_mask_test)
+
+    det_ctrl_ex = np.mean(flags_ctrl_model[exact_mask_test]) * 100.0
+    ci_det_ctrl_ex = group_bootstrap_ci(y_test, flags_ctrl_model, group_ids_test, is_binary_flag=True, mask=exact_mask_test)
+
+    det_ctrl_sub1 = np.mean(flags_ctrl_model[test_sub1_exact]) * 100.0
+    ci_det_ctrl_sub1 = group_bootstrap_ci(y_test, flags_ctrl_model, group_ids_test, is_binary_flag=True, mask=test_sub1_exact)
+
+    print(f"5% FA Threshold on Control Normal Test:          {thresh_ctrl_5fa:.4f} (Actual FA: {np.mean(flags_ctrl_model[norm_mask_test])*100:.2f}%)")
+    print(f"Overall Test AUC:                                {auc_ctrl_o:.4f} [{ci_ctrl_o[0]:.4f}, {ci_ctrl_o[1]:.4f}]")
+    print(f"Exact AC Test AUC:                               {auc_ctrl_e:.4f} [{ci_ctrl_e[0]:.4f}, {ci_ctrl_e[1]:.4f}]")
+    print(f"Detection on ALL Attacked @ 5% FA:               {det_ctrl_all:6.2f}% [{ci_det_ctrl_all[0]:.2f}%, {ci_det_ctrl_all[1]:.2f}%]")
+    print(f"Detection on Exact AC @ 5% FA:                   {det_ctrl_ex:6.2f}% [{ci_det_ctrl_ex[0]:.2f}%, {ci_det_ctrl_ex[1]:.2f}%]")
+    print(f"Detection on Exact AC < 1 sigma:                 {det_ctrl_sub1:6.2f}% [{ci_det_ctrl_sub1[0]:.2f}%, {ci_det_ctrl_sub1[1]:.2f}%]")
+
 if __name__ == "__main__":
     main()
+
