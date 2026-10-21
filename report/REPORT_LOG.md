@@ -919,6 +919,7 @@
 |---|---|---|---|---|
 | **Chi-Square** ($\chi^2$) | 0.7029 | 0.5050 | **0.6266** [0.6111, 0.6412] | **0.5004** [0.4753, 0.5268] |
 | **Calibrated LNR** | 0.7101 | 0.5028 | **0.6265** [0.6128, 0.6413] | **0.4998** [0.4760, 0.5242] |
+| **Range-Check (Envelope)** | 0.5027 | 0.5054 | **0.5330** [0.5260, 0.5410] | **0.5206** [0.5106, 0.5318] |
 | **Per-Hour Max-Z of $\hat{x}$** | 0.9423 | 0.9998 | **0.8152** [0.7986, 0.8318] | **0.8088** [0.7782, 0.8382] |
 | **Random Forest (D1+D2)** | 0.9501 | 0.9784 | **0.8962** [0.8820, 0.9099] | **0.9284** [0.9088, 0.9475] |
 
@@ -928,7 +929,7 @@
 |---|---|---|---|---|---|---|---|
 | **Chi-Square** | 4.90% | 46.20% | 26.10% | 4.52% | **4.52%** | 4.95% | 4.00% |
 | **Calibrated LNR** | 6.00% | 46.10% | 27.10% | 5.12% | **7.53%** | 8.24% | 6.67% |
-| **Range-Check** | 0.10% | 18.70% | 6.70% | 18.37% | **4.22%** | **0.00%** | 9.33% |
+| **Range-Check (Envelope)** | 0.10% | 18.70% | 6.70% | 18.37% | **4.22%** | **0.00%** | 9.33% |
 | **Per-Hour Max-Z** | 5.00% | 89.80% | 57.70% | 100.00% | **56.93%** | 59.34% | 54.00% |
 | **Random Forest (D1+D2)** | 5.00% | 82.80% | 73.80% | 88.55% | **77.71%** | 78.02% | 77.33% |
 
@@ -959,6 +960,81 @@
 - **Range-Check:** Completely blind ($0.00\%$ detection) to all `in_range` attacks; can only detect coarse unconstrained attacks above $2.0\%$ voltage shift ($> 10\sigma$).
 - **Per-Hour Max-Z Baseline:** Detection drops to the baseline false-alarm rate ($4.44\%$) for sub-sigma attacks ($< 1.0\sigma$, $< 0.1\%$ voltage shift). It begins detecting at $2.0\sigma$ ($57.69\%$) and reaches $100\%$ detection at $\ge 5.0\sigma$ ($> 2.0\%$ voltage shift).
 - **Random Forest (D1+D2):** Outperforms all baselines in the low-magnitude regime: retains **$56.67\%$** detection on sub-sigma attacks ($< 1.0\sigma$) and **$64.15\%$** detection on attacks between $0.05\% - 0.1\%$ voltage shift, by capturing multivariate power-flow cross-correlations across the 33 buses simultaneously.
+
+### PART 5: Exact Execution Commands (Committed Pipeline)
+```bash
+# 1. Generate normal dataset v2 (with daily scaling & shape jitter)
+julia --project=. julia/03_normal_data.jl configs/dataset_v2.toml
+
+# 2. Generate attacked dataset v2 (log-uniform magnitudes down to noise floor, shift_sigmas)
+julia --project=. julia/06_generate_dataset.jl configs/dataset_attacks_v2.toml
+
+# 3. Create group-aware and unseen attack splits
+.venv\Scripts\python.exe python/splits.py configs/features_v2.toml
+
+# 4. Compute Jacobian sensitivity features
+julia --project=. julia/07_sensitivity_features.jl configs/features_v2.toml
+
+# 5. Extract engineered feature matrices (A, B, C, D1, D2, D3)
+.venv\Scripts\python.exe python/features.py configs/features_v2.toml
+
+# 6. Comprehensive evaluation and shortcut test suite
+.venv\Scripts\python.exe python/eval_v2.py
+```
+
+## Pre-Task 8: Shortcut Tests & Feature Ablations on Dataset v2
+- **Date:** October 21, 2026
+- **What was done:**
+  - Evaluated Random Forest (300 trees, `max_depth=8`) under targeted hypothesis checks designed to probe potential learning shortcuts:
+    - **Test (a) Magnitude Generalization:** Model trained *only* on large attacks ($\text{shift\_sigmas} \ge 5.0$) and evaluated on subtle sub-sigma attacks ($\text{shift\_sigmas} < 1.0$).
+    - **Test (b) Twin Independence:** Model trained on exactly ONE randomly chosen row per `group_id` (3,000 independent rows, zero paired twins in training), evaluated on the standard test set.
+    - **Test (c) Feature-Group Ablations:** Separate evaluations for D1 only (raw $z, \hat{x}$), D2 only (hourly forecast deviations), and D1+D2 combined.
+  - All metrics reported with 1,000 group-bootstrap 95% confidence intervals resampling `group_id`.
+
+### 1. Data-Driven Range-Check Operating Envelope
+- Normal training voltage magnitude operating envelope (v2): $[0.899770, 1.003178]$ pu.
+- Re-evaluated test baseline:
+  - Normal Test False Alarm Rate: **$0.10\%$** ($1 / 1,000$)
+  - Overall Attacked Detection @ 5% FA: **$6.70\%$** ($67 / 1,000$)
+  - Exact AC Detection @ 5% FA: **$4.22\%$** ($14 / 332$)
+    - `in_range` Exact AC ($N = 182$): **$0.00\%$** ($0 / 182$)
+    - `unconstrained` Exact AC ($N = 150$): **$9.33\%$** ($14 / 150$)
+  - Continuous Envelope Violation Score ROC-AUC:
+    - Overall Test ROC-AUC: **$0.5330$ [0.5260, 0.5410]**
+    - Exact AC Test ROC-AUC: **$0.5206$ [0.5106, 0.5318]**
+
+### 2. Shortcut Test (a): Train Only on $\ge 5\sigma$ Attacks, Test on $< 1\sigma$ Attacks
+- **Training Set:** $N = 4,274$ rows ($3,000$ normal, $1,274$ attacked rows where `shift_sigmas >= 5.0`). The classifier never observes any attack $< 5\sigma$ during training.
+- **5% False Alarm Threshold on normal test rows:** `0.1570` (Empirical normal FA = $5.00\%$).
+- **Results with 95% Group Bootstrap CIs:**
+  - Detection on ALL Attacks $< 1.0\sigma$ ($N = 332$): **$58.43\%$ [53.10%, 63.95%]**
+  - Detection on EXACT AC Attacks $< 1.0\sigma$ ($N = 90$): **$47.78\%$ [37.07%, 58.62%]**
+  - Detection on ALL Exact AC Attacks ($N = 332$): **$79.52\%$ [75.08%, 84.05%]**
+- **Plain Statement:** Training only on large attacks ($\ge 5\sigma$) does **NOT** cut sub-1-sigma detection to near the false alarm rate. Detection on sub-1-sigma exact AC attacks remains at **$47.78\%$**, almost $10\times$ higher than the $5\%$ false alarm floor. The RF decision rules learned on large attacks capture multi-bus physical correlation structures that generalize directly down to subtle sub-sigma perturbations.
+
+### 3. Shortcut Test (b): Train with ONE Row per `group_id` (No Twins)
+- **Training Set:** $N = 3,000$ independent rows ($1,506$ normal, $1,494$ attacked), drawing exactly 1 row randomly per group. Zero paired twins exist in training.
+- **5% False Alarm Threshold on normal test rows:** `0.4116` (Empirical normal FA = $5.00\%$).
+- **Results with 95% Group Bootstrap CIs:**
+  - Overall Test ROC-AUC ($N = 2,000$): **$0.8990$ [0.8861, 0.9114]** (vs $0.8962$ paired)
+  - Exact AC Test ROC-AUC ($N = 1,332$): **$0.9247$ [0.9028, 0.9446]** (vs $0.9284$ paired)
+  - Overall Attacked Detection @ 5% FA ($N = 1,000$): **$74.80\%$ [72.20%, 77.50%]** (vs $73.80\%$ paired)
+  - Exact AC Detection @ 5% FA ($N = 332$): **$81.02\%$ [76.78%, 85.26%]** (vs $77.71\%$ paired)
+  - Exact AC Detection $< 1.0\sigma$ ($N = 90$): **$61.11\%$ [51.61%, 71.23%]** (vs $56.67\%$ paired)
+- **Plain Statement:** Training without paired twins does **NOT** cut sub-1-sigma detection to near the false alarm rate. Exact AC detection on sub-1-sigma attacks is **$61.11\%$** (slightly higher than the $56.67\%$ obtained with paired training). This decisively proves that the model's sensitivity to stealthy exact AC attacks is not driven by paired twin memorization or group-pairing shortcuts.
+
+### 4. Shortcut Test (c): Feature-Group Ablation (RF on D1 only, D2 only, D1+D2)
+
+| Feature Set | Count | Overall AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Exact AC $< 1\sigma$ Det [95% CI] |
+|---|---|---|---|---|---|---|
+| **D1 only** (Raw $z, \hat{x}$) | 228 | **0.9031** [0.8905, 0.9163] | **0.9341** [0.9156, 0.9513] | **75.80%** [73.20%, 78.60%] | **80.72%** [76.54%, 85.06%] | **56.67%** [47.14%, 67.00%] |
+| **D2 only** (Forecast Dev) | 228 | **0.9001** [0.8862, 0.9139] | **0.9284** [0.9083, 0.9473] | **75.50%** [72.90%, 78.30%] | **80.72%** [76.35%, 84.98%] | **60.00%** [50.53%, 70.22%] |
+| **D1+D2** (Combined) | 456 | **0.8962** [0.8818, 0.9101] | **0.9284** [0.9098, 0.9466] | **73.80%** [71.30%, 76.80%] | **77.71%** [73.45%, 82.66%] | **56.67%** [46.91%, 67.53%] |
+
+- **Key Takeaways:**
+  - Both D1 alone and D2 alone achieve $\approx 93\%$ Exact AC ROC-AUC and $\approx 80.7\%$ detection at 5% FA.
+  - Sub-1-sigma detection is $56.67\%$ for D1 and $60.00\%$ for D2, demonstrating that instantaneous state vectors ($z, \hat{x}$) and hourly forecast deviations ($\Delta_{\text{fc}} z, \Delta_{\text{fc}} \hat{x}$) independently provide strong physical discrimination against exact AC state shifts.
+
 
 
 
