@@ -1,0 +1,50 @@
+# Model training and evaluation configuration for Task 8 (Dataset v2)
+
+[general]
+seed = 42
+data_dir = "data"
+results_dir = "results"
+splits_file = "data/splits_v2.csv"
+attacks_file = "data/attacks_full_v2.csv"
+features_meta = "data/features_meta_v2.json"
+train_features = "data/features_train_v2.csv"
+val_features = "data/features_val_v2.csv"
+test_features = "data/features_test_v2.csv"
+
+[features]
+# Feature group toggles for primary supervised model
+use_group_a = true
+use_group_b = true
+use_group_c = true
+use_group_d1 = true
+use_group_d2 = true
+use_group_d3 = false   # Set to true only for twin-reference verification experiment
+
+[random_forest]
+seed = 42
+n_jobs = -1
+# Hyperparameter grid to tune on VALIDATION split only
+grid_n_estimators = [100, 300]
+grid_max_depth = [6, 8, 12]
+grid_min_samples_leaf = [1, 3]
+
+[autoencoder]
+seed = 42
+batch_size = 64
+learning_rate = 0.001
+weight_decay = 1e-5
+max_epochs = 60
+patience = 8
+# Candidate bottleneck sizes to compare on validation normal reconstruction loss only
+bottleneck_candidates_d12 = [16, 32]
+bottleneck_candidates_all = [32, 64]
+
+[evaluation]
+n_bootstrap = 1000
+bootstrap_seed = 42
+null_check_seeds = 20
+false_alarm_rates = [0.05, 0.01]
+sigma_bins = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 100.0]
+sigma_labels = ["<1.0 sigma", "1.0-2.0 sig", "2.0-3.0 sig", "3.0-5.0 sig", "5.0-10.0 sig", ">10.0 sigmas"]
+shift_ratio_bins = [0.0, 0.25, 0.50, 0.75, 2.0]
+shift_ratio_labels = ["<=0.25", "0.25-0.50", "0.50-0.75", ">0.75"]
