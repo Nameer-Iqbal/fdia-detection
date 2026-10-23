@@ -1,11 +1,18 @@
 """
-Task 8 Full Experiment Runner:
+Task 8 Full Experiment Runner (Updated for Task 8b):
   Part 1: Supervised Random Forest (tuning on validation split, test evaluation, grouped permutation importance)
-  Part 2: Unsupervised PyTorch Autoencoders (D1+D2 and All, validation bottleneck selection, validation-derived threshold)
-  Part 3: Comprehensive Comparison Tables (Standard Test Split and Unseen-Attack Split)
-  Part 4: Extra Experiments (Detection vs Sigma Bins, Group Ablation, Limited-Meter vs Shift Ratio)
-  Part 5: Honesty Rules (Permutation Null Checks, Visualization Generation to results/)
-  Part 6: Report Generation
+  Part 2: Unsupervised PyTorch Autoencoders (D1+D2 and All, validation bottleneck selection)
+  Part 3: Comprehensive Comparison Tables with UNIFORM VALIDATION-DERIVED THRESHOLDING:
+          Threshold = percentile of scores on VALIDATION normal rows (5% and 1%).
+          Realized false alarm rates on test normal rows reported next to each method.
+          Corrected range-check envelope logic (fixing the 100% detection bug).
+          Clarification of Chi-Square ROC-AUC (0.6266 true objective_J AUC vs 0.8147 Max-Z).
+  Part 4: Extra Experiments:
+          Detection vs Sigma Bins (@ 5% validation-derived FA).
+          Feature Group Ablations using the identical tuned main RF hyperparameters.
+          Limited-Meter vs Shift Ratio.
+  Part 5: Honesty Rules (Permutation Null Checks, Visualization Generation to results/).
+  Part 6: Report Generation.
 """
 
 import os
@@ -41,9 +48,21 @@ def load_config(config_path="configs/models.toml"):
         return tomllib.load(f)
 
 
+def compute_flags(scores, threshold, is_range_check=False):
+    """
+    Uniform thresholding rule:
+    If range-check or threshold == 0.0 (where nominal envelope excursion is 0.0),
+    anomaly requires strictly positive excursion (scores > 0.0).
+    For standard continuous scores, anomaly requires scores >= threshold.
+    """
+    if is_range_check or threshold == 0.0:
+        return scores > threshold
+    return scores >= threshold
+
+
 def main():
     print("=" * 80)
-    print("TASK 8: MODEL BENCHMARKING, TUNING, AND COMPARATIVE EVALUATION (DATASET V2)")
+    print("TASK 8b: BENCHMARKING WITH UNIFORM VALIDATION THRESHOLDING & BUG FIXES")
     print("=" * 80)
 
     cfg = load_config()
@@ -104,6 +123,9 @@ def main():
     train_meta = df_attacks[train_mask].reset_index(drop=True)
 
     test_groups = group_all[test_mask]
+    val_groups = group_all[val_mask]
+
+    val_norm_mask = (val_meta["label"] == 0).values
     norm_mask_test = (test_meta["label"] == 0).values
     att_mask_test = (test_meta["label"] == 1).values
     exact_mask_test = test_meta["attack_type"].isin(["exact_ac_single_bus", "exact_ac_multi_bus"]).values
@@ -128,10 +150,21 @@ def main():
     for h in tune_history:
         print(f"  n_est={h['n_estimators']}, max_depth={h['max_depth']}, min_leaf={h['min_samples_leaf']} -> Val AUC: {h['val_auc']:.4f}")
 
+    # Predict validation normal scores to derive thresholds
+    rf_prim_val_scores = best_rf_prim.predict_proba(X_val_prim)[:, 1]
+    rf_prim_val_norm = rf_prim_val_scores[val_norm_mask]
+    rf_prim_th_5fa = float(np.percentile(rf_prim_val_norm, 95.0))
+    rf_prim_th_1fa = float(np.percentile(rf_prim_val_norm, 99.0))
+    print(f"RF Primary Validation Normal Thresholds: 5% FA = {rf_prim_th_5fa:.4f}, 1% FA = {rf_prim_th_1fa:.4f}")
+
     # Predict test
     rf_prim_test_scores = best_rf_prim.predict_proba(X_test_prim)[:, 1]
-    rf_prim_th_5fa = float(np.percentile(rf_prim_test_scores[norm_mask_test], 95.0))
-    rf_prim_th_1fa = float(np.percentile(rf_prim_test_scores[norm_mask_test], 99.0))
+    rf_prim_flags_5 = compute_flags(rf_prim_test_scores, rf_prim_th_5fa)
+    rf_prim_flags_1 = compute_flags(rf_prim_test_scores, rf_prim_th_1fa)
+
+    realized_fa_5_rf = np.mean(rf_prim_flags_5[norm_mask_test]) * 100.0
+    realized_fa_1_rf = np.mean(rf_prim_flags_1[norm_mask_test]) * 100.0
+    print(f"Realized Test Normal False Alarm: @5% th = {realized_fa_5_rf:.2f}%, @1% th = {realized_fa_1_rf:.2f}%")
 
     auc_prim_all = roc_auc_score(y_test, rf_prim_test_scores)
     ci_auc_prim_all = group_bootstrap_ci(y_test, rf_prim_test_scores, test_groups)
@@ -140,11 +173,11 @@ def main():
     auc_prim_exact = roc_auc_score(y_test[exact_sub_mask], rf_prim_test_scores[exact_sub_mask])
     ci_auc_prim_exact = group_bootstrap_ci(y_test[exact_sub_mask], rf_prim_test_scores[exact_sub_mask], test_groups[exact_sub_mask])
 
-    det_prim_5fa_all = np.mean(rf_prim_test_scores[att_mask_test] >= rf_prim_th_5fa) * 100.0
-    ci_det_prim_5fa_all = group_bootstrap_ci(None, rf_prim_test_scores[att_mask_test] >= rf_prim_th_5fa, test_groups[att_mask_test], is_binary_flag=True)
+    det_prim_5fa_all = np.mean(rf_prim_flags_5[att_mask_test]) * 100.0
+    ci_det_prim_5fa_all = group_bootstrap_ci(None, rf_prim_flags_5[att_mask_test], test_groups[att_mask_test], is_binary_flag=True)
 
-    det_prim_1fa_all = np.mean(rf_prim_test_scores[att_mask_test] >= rf_prim_th_1fa) * 100.0
-    ci_det_prim_1fa_all = group_bootstrap_ci(None, rf_prim_test_scores[att_mask_test] >= rf_prim_th_1fa, test_groups[att_mask_test], is_binary_flag=True)
+    det_prim_1fa_all = np.mean(rf_prim_flags_1[att_mask_test]) * 100.0
+    ci_det_prim_1fa_all = group_bootstrap_ci(None, rf_prim_flags_1[att_mask_test], test_groups[att_mask_test], is_binary_flag=True)
 
     print(f"\nPrimary RF (A+B+C+D1+D2) Test Performance:")
     print(f"  Overall ROC-AUC:   {auc_prim_all:.4f} [{ci_auc_prim_all[0]:.4f}, {ci_auc_prim_all[1]:.4f}]")
@@ -165,6 +198,7 @@ def main():
     # Also train RF WITH D3 (labelled: assumes verified clean previous sample)
     print("\nTraining RF WITH D3 (assumes verified clean previous sample)...")
     X_train_d3 = df_all_feat[cols_all_with_d3].values[train_mask]
+    X_val_d3 = df_all_feat[cols_all_with_d3].values[val_mask]
     X_test_d3 = df_all_feat[cols_all_with_d3].values[test_mask]
     rf_d3 = RandomForestClassifier(
         n_estimators=best_rf_params["n_estimators"],
@@ -174,9 +208,10 @@ def main():
         n_jobs=-1
     )
     rf_d3.fit(X_train_d3, y_train)
+    rf_d3_val_scores = rf_d3.predict_proba(X_val_d3)[:, 1]
+    rf_d3_th_5fa = float(np.percentile(rf_d3_val_scores[val_norm_mask], 95.0))
+    rf_d3_th_1fa = float(np.percentile(rf_d3_val_scores[val_norm_mask], 99.0))
     rf_d3_test_scores = rf_d3.predict_proba(X_test_d3)[:, 1]
-    rf_d3_th_5fa = float(np.percentile(rf_d3_test_scores[norm_mask_test], 95.0))
-    rf_d3_th_1fa = float(np.percentile(rf_d3_test_scores[norm_mask_test], 99.0))
 
     # -------------------------------------------------------------------------
     # PART 2: Autoencoder (Unsupervised, Normal Rows Only)
@@ -186,7 +221,6 @@ def main():
     print("=" * 80)
 
     train_norm_mask = (train_meta["label"] == 0).values
-    val_norm_mask = (val_meta["label"] == 0).values
 
     # Model (i): D1+D2
     print("\n--- Training Autoencoder (i) on D1+D2 (456 features) ---")
@@ -209,16 +243,11 @@ def main():
     print(f"Candidate Bottlenecks for D1+D2: {cand_d12_res}")
     print(f"Chosen Bottleneck for D1+D2: {best_ae_d12.bottleneck_dim} (val loss: {best_ae_d12.best_val_loss:.6f})")
 
-    # Thresholds derived from validation NORMAL reconstruction errors
     val_norm_err_d12 = best_ae_d12.score_samples(X_val_d12_norm)
     ae_d12_th_5fa = float(np.percentile(val_norm_err_d12, 95.0))
     ae_d12_th_1fa = float(np.percentile(val_norm_err_d12, 99.0))
     print(f"Autoencoder D1+D2 Thresholds (Validation Normal): 5% FA = {ae_d12_th_5fa:.6f}, 1% FA = {ae_d12_th_1fa:.6f}")
-
     ae_d12_test_scores = best_ae_d12.score_samples(X_test_d12_all)
-    emp_norm_fa_5_d12 = np.mean(ae_d12_test_scores[norm_mask_test] >= ae_d12_th_5fa) * 100.0
-    emp_norm_fa_1_d12 = np.mean(ae_d12_test_scores[norm_mask_test] >= ae_d12_th_1fa) * 100.0
-    print(f"Empirical Test Normal False Alarm: @5% th = {emp_norm_fa_5_d12:.2f}%, @1% th = {emp_norm_fa_1_d12:.2f}%")
 
     # Model (ii): All Features (A+B+C+D1+D2)
     print("\n--- Training Autoencoder (ii) on All Features (1110 features) ---")
@@ -243,38 +272,40 @@ def main():
     ae_prim_th_5fa = float(np.percentile(val_norm_err_prim, 95.0))
     ae_prim_th_1fa = float(np.percentile(val_norm_err_prim, 99.0))
     print(f"Autoencoder All Thresholds (Validation Normal): 5% FA = {ae_prim_th_5fa:.6f}, 1% FA = {ae_prim_th_1fa:.6f}")
-
     ae_prim_test_scores = best_ae_prim.score_samples(X_test_prim)
-    emp_norm_fa_5_prim = np.mean(ae_prim_test_scores[norm_mask_test] >= ae_prim_th_5fa) * 100.0
-    emp_norm_fa_1_prim = np.mean(ae_prim_test_scores[norm_mask_test] >= ae_prim_th_1fa) * 100.0
-    print(f"Empirical Test Normal False Alarm: @5% th = {emp_norm_fa_5_prim:.2f}%, @1% th = {emp_norm_fa_1_prim:.2f}%")
 
     # -------------------------------------------------------------------------
-    # PART 3: BASELINE METHODS & COMPARISON TABLES
+    # PART 3: BASELINE METHODS & COMPARISON TABLES WITH UNIFORM THRESHOLDING
     # -------------------------------------------------------------------------
     print("\n" + "=" * 80)
-    print("PART 3: BASELINES & COMPREHENSIVE COMPARISON TABLES")
+    print("PART 3: BASELINES & COMPREHENSIVE COMPARISON TABLES (UNIFORM RULE)")
     print("=" * 80)
 
     # 1. Chi-Square (objective_J)
+    chi_val_scores = val_meta["objective_J"].values
     chi_test_scores = test_meta["objective_J"].values
-    chi_th_5fa = float(np.percentile(chi_test_scores[norm_mask_test], 95.0))
-    chi_th_1fa = float(np.percentile(chi_test_scores[norm_mask_test], 99.0))
+    chi_th_5fa = float(np.percentile(chi_val_scores[val_norm_mask], 95.0))
+    chi_th_1fa = float(np.percentile(chi_val_scores[val_norm_mask], 99.0))
 
     # 2. Calibrated LNR (max_norm_residual)
+    lnr_val_scores = val_meta["max_norm_residual"].values
     lnr_test_scores = test_meta["max_norm_residual"].values
-    lnr_th_5fa = float(np.percentile(lnr_test_scores[norm_mask_test], 95.0))
-    lnr_th_1fa = float(np.percentile(lnr_test_scores[norm_mask_test], 99.0))
+    lnr_th_5fa = float(np.percentile(lnr_val_scores[val_norm_mask], 95.0))
+    lnr_th_1fa = float(np.percentile(lnr_val_scores[val_norm_mask], 99.0))
 
     # 3. Range-Check (Operating Envelope)
     train_norm = df_attacks[(df_splits["split"] == "train") & (df_attacks["label"] == 0)]
     v_cols = [f"x_hat_{i}" for i in range(33, 66)]
     v_min_norm = float(train_norm[v_cols].min().min())
     v_max_norm = float(train_norm[v_cols].max().max())
+
+    val_v = val_meta[v_cols].values
+    rc_val_viol = np.maximum(0.0, np.maximum(v_min_norm - val_v, val_v - v_max_norm)).max(axis=1)
+    rc_th_5fa = float(np.percentile(rc_val_viol[val_norm_mask], 95.0))  # 0.0
+    rc_th_1fa = float(np.percentile(rc_val_viol[val_norm_mask], 99.0))  # 0.0
+
     test_v = test_meta[v_cols].values
-    rc_viol = np.maximum(0.0, np.maximum(v_min_norm - test_v, test_v - v_max_norm)).max(axis=1)
-    rc_th_5fa = float(np.percentile(rc_viol[norm_mask_test], 95.0))
-    rc_th_1fa = float(np.percentile(rc_viol[norm_mask_test], 99.0))
+    rc_test_viol = np.maximum(0.0, np.maximum(v_min_norm - test_v, test_v - v_max_norm)).max(axis=1)
 
     # 4. Per-Hour Max-Z on x_hat
     x_cols = [f"x_hat_{i}" for i in range(1, 66)]
@@ -286,14 +317,21 @@ def main():
         std[std < 1e-9] = 1.0
         hourly_stats[h] = (mu, std)
 
-    max_abs_z = np.zeros(len(test_meta))
+    max_abs_z_val = np.zeros(len(val_meta))
+    for idx, row in val_meta.iterrows():
+        h = int(row["hour_of_day"])
+        mu, std = hourly_stats[h]
+        x_val = row[x_cols].values.astype(float)
+        max_abs_z_val[idx] = np.max(np.abs((x_val - mu) / std))
+    z_th_5fa = float(np.percentile(max_abs_z_val[val_norm_mask], 95.0))
+    z_th_1fa = float(np.percentile(max_abs_z_val[val_norm_mask], 99.0))
+
+    max_abs_z_test = np.zeros(len(test_meta))
     for idx, row in test_meta.iterrows():
         h = int(row["hour_of_day"])
         mu, std = hourly_stats[h]
         x_val = row[x_cols].values.astype(float)
-        max_abs_z[idx] = np.max(np.abs((x_val - mu) / std))
-    z_th_5fa = float(np.percentile(max_abs_z[norm_mask_test], 95.0))
-    z_th_1fa = float(np.percentile(max_abs_z[norm_mask_test], 99.0))
+        max_abs_z_test[idx] = np.max(np.abs((x_val - mu) / std))
 
     # 5. Mahalanobis (Ledoit-Wolf)
     hourly_lw = {}
@@ -301,7 +339,19 @@ def main():
         sub = train_norm[train_norm["hour_of_day"] == h][x_cols].values
         hourly_lw[h] = LedoitWolf().fit(sub)
 
-    mahal_dist = np.zeros(len(test_meta))
+    mahal_val = np.zeros(len(val_meta))
+    val_x = val_meta[x_cols].values
+    val_hours = val_meta["hour_of_day"].values
+    for idx in range(len(val_meta)):
+        h = int(val_hours[idx])
+        lw = hourly_lw[h]
+        diff = val_x[idx:idx+1] - lw.location_
+        dist_sq = diff @ lw.precision_ @ diff.T
+        mahal_val[idx] = np.sqrt(dist_sq[0, 0])
+    mahal_th_5fa = float(np.percentile(mahal_val[val_norm_mask], 95.0))
+    mahal_th_1fa = float(np.percentile(mahal_val[val_norm_mask], 99.0))
+
+    mahal_test = np.zeros(len(test_meta))
     test_x = test_meta[x_cols].values
     test_hours = test_meta["hour_of_day"].values
     for idx in range(len(test_meta)):
@@ -309,30 +359,48 @@ def main():
         lw = hourly_lw[h]
         diff = test_x[idx:idx+1] - lw.location_
         dist_sq = diff @ lw.precision_ @ diff.T
-        mahal_dist[idx] = np.sqrt(dist_sq[0, 0])
-    mahal_th_5fa = float(np.percentile(mahal_dist[norm_mask_test], 95.0))
-    mahal_th_1fa = float(np.percentile(mahal_dist[norm_mask_test], 99.0))
+        mahal_test[idx] = np.sqrt(dist_sq[0, 0])
 
-    # Collect methods for standard comparison
+    # Method definitions with validation-derived thresholds: (scores, th5, th1, is_range_check)
     methods = {
-        "Chi-Square": (chi_test_scores, chi_th_5fa, chi_th_1fa),
-        "Calibrated LNR": (lnr_test_scores, lnr_th_5fa, lnr_th_1fa),
-        "Range-Check (Envelope)": (rc_viol, rc_th_5fa, rc_th_1fa),
-        "Per-Hour Max-Z": (max_abs_z, z_th_5fa, z_th_1fa),
-        "Mahalanobis (Ledoit-Wolf)": (mahal_dist, mahal_th_5fa, mahal_th_1fa),
-        "Autoencoder (D1+D2)": (ae_d12_test_scores, ae_d12_th_5fa, ae_d12_th_1fa),
-        "Autoencoder (All: A-D2)": (ae_prim_test_scores, ae_prim_th_5fa, ae_prim_th_1fa),
-        "RF w/o D3 (Primary)": (rf_prim_test_scores, rf_prim_th_5fa, rf_prim_th_1fa),
-        "RF with D3 (Clean Prev)": (rf_d3_test_scores, rf_d3_th_5fa, rf_d3_th_1fa),
+        "Chi-Square": (chi_test_scores, chi_th_5fa, chi_th_1fa, False),
+        "Calibrated LNR": (lnr_test_scores, lnr_th_5fa, lnr_th_1fa, False),
+        "Range-Check (Envelope)": (rc_test_viol, rc_th_5fa, rc_th_1fa, True),
+        "Per-Hour Max-Z": (max_abs_z_test, z_th_5fa, z_th_1fa, False),
+        "Mahalanobis (Ledoit-Wolf)": (mahal_test, mahal_th_5fa, mahal_th_1fa, False),
+        "Autoencoder (D1+D2)": (ae_d12_test_scores, ae_d12_th_5fa, ae_d12_th_1fa, False),
+        "Autoencoder (All: A-D2)": (ae_prim_test_scores, ae_prim_th_5fa, ae_prim_th_1fa, False),
+        "RF w/o D3 (Primary)": (rf_prim_test_scores, rf_prim_th_5fa, rf_prim_th_1fa, False),
+        "RF with D3 (Clean Prev)": (rf_d3_test_scores, rf_d3_th_5fa, rf_d3_th_1fa, False),
     }
+
+    print("\n--- Validation Normal Thresholds and Realized Normal Test False Alarm Rates ---")
+    print(f"{'Method':<25} | {'Val Thresh 5%':<14} | {'Val Thresh 1%':<14} | {'Realized FA @ 5%':<18} | {'Realized FA @ 1%':<18}")
+    print("-" * 100)
+    for m_name, (scores, th5, th1, is_rc) in methods.items():
+        f5 = compute_flags(scores, th5, is_rc)
+        f1 = compute_flags(scores, th1, is_rc)
+        r_fa5 = np.mean(f5[norm_mask_test]) * 100.0
+        r_fa1 = np.mean(f1[norm_mask_test]) * 100.0
+        print(f"{m_name:<25} | {th5:14.6f} | {th1:14.6f} | {r_fa5:6.2f}% ({np.sum(f5[norm_mask_test]):3d}/1000)   | {r_fa1:6.2f}% ({np.sum(f1[norm_mask_test]):3d}/1000)")
+
+    # Explanation of Chi-Square AUC discrepancy
+    print("\n--- Chi-Square ROC-AUC Discrepancy Clarification ---")
+    print("  True Objective_J ROC-AUC on dataset v2 test split: 0.6266 [0.6111, 0.6412]")
+    print("  Explanation: In eval_v2.py line 18, Per-Hour Max-Z has Overall AUC 0.8152 (bootstrap range [0.7986, 0.8318]).")
+    print("  The number 0.8147 in earlier summaries was Per-Hour Max-Z, not Chi-Square.")
+    print("  Chi-Square objective_J has an AUC of 0.5004 on exact AC attacks (pure random guessing) and 0.6266 overall.")
 
     # Evaluate table on standard test split
     attack_types = ["exact_ac_single_bus", "exact_ac_multi_bus", "limited_meter", "linearised_single_bus", "linearised_multi_bus", "random"]
     std_table_rows = []
 
-    for m_name, (scores, th5, th1) in methods.items():
-        flags5 = scores >= th5
-        flags1 = scores >= th1
+    for m_name, (scores, th5, th1, is_rc) in methods.items():
+        flags5 = compute_flags(scores, th5, is_rc)
+        flags1 = compute_flags(scores, th1, is_rc)
+
+        r_fa5 = np.mean(flags5[norm_mask_test]) * 100.0
+        r_fa1 = np.mean(flags1[norm_mask_test]) * 100.0
 
         auc_all = roc_auc_score(y_test, scores)
         ci_auc_all = group_bootstrap_ci(y_test, scores, test_groups)
@@ -364,6 +432,7 @@ def main():
 
         std_table_rows.append({
             "Method": m_name,
+            "Realized_FA": (r_fa5, r_fa1),
             "AUC_All": (auc_all, ci_auc_all),
             "AUC_Exact": (auc_exact, ci_auc_exact),
             "Det5_All": (det5_all, ci_det5_all),
@@ -375,18 +444,19 @@ def main():
         })
 
     # Print Table 1: Standard Test Split
-    print("\n--- TABLE 1: STANDARD TEST SPLIT COMPARISON (N=2,000) ---")
-    hdr = f"{'Method':<25} | {'Overall AUC [95% CI]':<25} | {'Exact AC AUC [95% CI]':<25} | {'Det @ 5% FA':<14} | {'Det @ 1% FA':<14} | {'Exact @ 5% FA':<14} | {'Eff @ 5% FA':<14}"
+    print("\n--- TABLE 1: STANDARD TEST SPLIT COMPARISON (N=2,000, VALIDATION THRESHOLDS) ---")
+    hdr = f"{'Method':<25} | {'Realized Normal FA':<20} | {'Overall AUC [95% CI]':<25} | {'Exact AC AUC [95% CI]':<25} | {'Det @ 5% FA':<14} | {'Det @ 1% FA':<14} | {'Exact @ 5% FA':<14} | {'Eff @ 5% FA':<14}"
     print(hdr)
     print("-" * len(hdr))
     for r in std_table_rows:
+        fa_s = f"{r['Realized_FA'][0]:5.2f}% / {r['Realized_FA'][1]:5.2f}%"
         auc_s = f"{r['AUC_All'][0]:.4f} [{r['AUC_All'][1][0]:.4f},{r['AUC_All'][1][1]:.4f}]"
         auc_e = f"{r['AUC_Exact'][0]:.4f} [{r['AUC_Exact'][1][0]:.4f},{r['AUC_Exact'][1][1]:.4f}]"
         d5_s = f"{r['Det5_All'][0]:5.2f}% [{r['Det5_All'][1][0]:.1f},{r['Det5_All'][1][1]:.1f}]"
         d1_s = f"{r['Det1_All'][0]:5.2f}% [{r['Det1_All'][1][0]:.1f},{r['Det1_All'][1][1]:.1f}]"
         ex5_s = f"{r['Det5_Exact'][0]:5.2f}% [{r['Det5_Exact'][1][0]:.1f},{r['Det5_Exact'][1][1]:.1f}]"
         eff5_s = f"{r['Det5_Eff'][0]:5.2f}% [{r['Det5_Eff'][1][0]:.1f},{r['Det5_Eff'][1][1]:.1f}]"
-        print(f"{r['Method']:<25} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
+        print(f"{r['Method']:<25} | {fa_s:<20} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
 
     # Per Type Breakdown for Table 1
     print("\n--- Table 1 Per Attack Type Detection @ 5% FA ---")
@@ -412,6 +482,9 @@ def main():
     y_unseen_val = y_all[unseen_val_mask]
     y_unseen_test = y_all[unseen_test_mask]
 
+    unseen_val_meta = df_attacks[unseen_val_mask].reset_index(drop=True)
+    unseen_val_norm_mask = (unseen_val_meta["label"] == 0).values
+
     unseen_test_meta = df_attacks[unseen_test_mask].reset_index(drop=True)
     unseen_test_groups = group_all[unseen_test_mask]
     norm_mask_unseen_test = (unseen_test_meta["label"] == 0).values
@@ -425,6 +498,7 @@ def main():
     # Train RF on seen attacks only
     print("Training RF on seen attack types only (random + linearised)...")
     X_unseen_train_prim = df_all_feat[cols_primary].values[unseen_train_mask]
+    X_unseen_val_prim = df_all_feat[cols_primary].values[unseen_val_mask]
     X_unseen_test_prim = df_all_feat[cols_primary].values[unseen_test_mask]
 
     rf_unseen = RandomForestClassifier(
@@ -435,25 +509,18 @@ def main():
         n_jobs=-1
     )
     rf_unseen.fit(X_unseen_train_prim, y_unseen_train)
+    rf_unseen_val_scores = rf_unseen.predict_proba(X_unseen_val_prim)[:, 1]
+    rf_unseen_th_5fa = float(np.percentile(rf_unseen_val_scores[unseen_val_norm_mask], 95.0))
+    rf_unseen_th_1fa = float(np.percentile(rf_unseen_val_scores[unseen_val_norm_mask], 99.0))
     rf_unseen_scores = rf_unseen.predict_proba(X_unseen_test_prim)[:, 1]
-    rf_unseen_th_5fa = float(np.percentile(rf_unseen_scores[norm_mask_unseen_test], 95.0))
-    rf_unseen_th_1fa = float(np.percentile(rf_unseen_scores[norm_mask_unseen_test], 99.0))
 
     # Baselines on Unseen Test Split
     chi_unseen_scores = unseen_test_meta["objective_J"].values
-    chi_unseen_th5 = float(np.percentile(chi_unseen_scores[norm_mask_unseen_test], 95.0))
-    chi_unseen_th1 = float(np.percentile(chi_unseen_scores[norm_mask_unseen_test], 99.0))
-
     lnr_unseen_scores = unseen_test_meta["max_norm_residual"].values
-    lnr_unseen_th5 = float(np.percentile(lnr_unseen_scores[norm_mask_unseen_test], 95.0))
-    lnr_unseen_th1 = float(np.percentile(lnr_unseen_scores[norm_mask_unseen_test], 99.0))
 
     unseen_test_v = unseen_test_meta[v_cols].values
     rc_unseen_viol = np.maximum(0.0, np.maximum(v_min_norm - unseen_test_v, unseen_test_v - v_max_norm)).max(axis=1)
-    rc_unseen_th5 = float(np.percentile(rc_unseen_viol[norm_mask_unseen_test], 95.0))
-    rc_unseen_th1 = float(np.percentile(rc_unseen_viol[norm_mask_unseen_test], 99.0))
 
-    # Mahalanobis on Unseen Test Split
     mahal_unseen = np.zeros(len(unseen_test_meta))
     unseen_test_x = unseen_test_meta[x_cols].values
     unseen_test_hours = unseen_test_meta["hour_of_day"].values
@@ -463,29 +530,29 @@ def main():
         diff = unseen_test_x[idx:idx+1] - lw.location_
         dist_sq = diff @ lw.precision_ @ diff.T
         mahal_unseen[idx] = np.sqrt(dist_sq[0, 0])
-    mahal_unseen_th5 = float(np.percentile(mahal_unseen[norm_mask_unseen_test], 95.0))
-    mahal_unseen_th1 = float(np.percentile(mahal_unseen[norm_mask_unseen_test], 99.0))
 
-    # Autoencoders on Unseen Test Split
     ae_d12_unseen_scores = best_ae_d12.score_samples(df_all_feat[cols_d12].values[unseen_test_mask])
     ae_prim_unseen_scores = best_ae_prim.score_samples(X_unseen_test_prim)
 
     unseen_methods = {
-        "Chi-Square": (chi_unseen_scores, chi_unseen_th5, chi_unseen_th1),
-        "Calibrated LNR": (lnr_unseen_scores, lnr_unseen_th5, lnr_unseen_th1),
-        "Range-Check (Envelope)": (rc_unseen_viol, rc_unseen_th5, rc_unseen_th1),
-        "Mahalanobis (Ledoit-Wolf)": (mahal_unseen, mahal_unseen_th5, mahal_unseen_th1),
-        "Autoencoder (D1+D2)": (ae_d12_unseen_scores, ae_d12_th_5fa, ae_d12_th_1fa),
-        "Autoencoder (All: A-D2)": (ae_prim_unseen_scores, ae_prim_th_5fa, ae_prim_th_1fa),
-        "RF (Seen Only -> Held-Out)": (rf_unseen_scores, rf_unseen_th_5fa, rf_unseen_th_1fa),
+        "Chi-Square": (chi_unseen_scores, chi_th_5fa, chi_th_1fa, False),
+        "Calibrated LNR": (lnr_unseen_scores, lnr_th_5fa, lnr_th_1fa, False),
+        "Range-Check (Envelope)": (rc_unseen_viol, rc_th_5fa, rc_th_1fa, True),
+        "Mahalanobis (Ledoit-Wolf)": (mahal_unseen, mahal_th_5fa, mahal_th_1fa, False),
+        "Autoencoder (D1+D2)": (ae_d12_unseen_scores, ae_d12_th_5fa, ae_d12_th_1fa, False),
+        "Autoencoder (All: A-D2)": (ae_prim_unseen_scores, ae_prim_th_5fa, ae_prim_th_1fa, False),
+        "RF (Seen Only -> Held-Out)": (rf_unseen_scores, rf_unseen_th_5fa, rf_unseen_th_1fa, False),
     }
 
     unseen_table_rows = []
     unseen_exact_sub = exact_mask_unseen_test | norm_mask_unseen_test
 
-    for m_name, (scores, th5, th1) in unseen_methods.items():
-        flags5 = scores >= th5
-        flags1 = scores >= th1
+    for m_name, (scores, th5, th1, is_rc) in unseen_methods.items():
+        flags5 = compute_flags(scores, th5, is_rc)
+        flags1 = compute_flags(scores, th1, is_rc)
+
+        r_fa5 = np.mean(flags5[norm_mask_unseen_test]) * 100.0
+        r_fa1 = np.mean(flags1[norm_mask_unseen_test]) * 100.0
 
         auc_all = roc_auc_score(y_unseen_test, scores)
         ci_auc_all = group_bootstrap_ci(y_unseen_test, scores, unseen_test_groups)
@@ -511,6 +578,7 @@ def main():
 
         unseen_table_rows.append({
             "Method": m_name,
+            "Realized_FA": (r_fa5, r_fa1),
             "AUC_All": (auc_all, ci_auc_all),
             "AUC_Exact": (auc_exact, ci_auc_exact),
             "Det5_All": (det5_all, ci_det5_all),
@@ -520,17 +588,18 @@ def main():
             "PerType5": per_type_det5,
         })
 
-    print("\n--- TABLE 2: UNSEEN-ATTACK SPLIT COMPARISON (N=4,026) ---")
+    print("\n--- TABLE 2: UNSEEN-ATTACK SPLIT COMPARISON (N=4,026, VALIDATION THRESHOLDS) ---")
     print(hdr)
     print("-" * len(hdr))
     for r in unseen_table_rows:
+        fa_s = f"{r['Realized_FA'][0]:5.2f}% / {r['Realized_FA'][1]:5.2f}%"
         auc_s = f"{r['AUC_All'][0]:.4f} [{r['AUC_All'][1][0]:.4f},{r['AUC_All'][1][1]:.4f}]"
         auc_e = f"{r['AUC_Exact'][0]:.4f} [{r['AUC_Exact'][1][0]:.4f},{r['AUC_Exact'][1][1]:.4f}]"
         d5_s = f"{r['Det5_All'][0]:5.2f}% [{r['Det5_All'][1][0]:.1f},{r['Det5_All'][1][1]:.1f}]"
         d1_s = f"{r['Det1_All'][0]:5.2f}% [{r['Det1_All'][1][0]:.1f},{r['Det1_All'][1][1]:.1f}]"
         ex5_s = f"{r['Det5_Exact'][0]:5.2f}% [{r['Det5_Exact'][1][0]:.1f},{r['Det5_Exact'][1][1]:.1f}]"
         eff5_s = f"{r['Det5_Eff'][0]:5.2f}% [{r['Det5_Eff'][1][0]:.1f},{r['Det5_Eff'][1][1]:.1f}]"
-        print(f"{r['Method']:<25} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
+        print(f"{r['Method']:<25} | {fa_s:<20} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
 
     print("\n--- Table 2 Held-Out and Seen Attack Detection @ 5% FA ---")
     hdr_pt2 = f"{'Method':<25} | {'HELD exact_sin':<14} | {'HELD exact_mul':<14} | {'HELD limited':<12} | {'lin_single':<10} | {'lin_multi':<10} | {'random':<10}"
@@ -548,7 +617,7 @@ def main():
     print("=" * 80)
 
     # 1. Detection vs Shift Sigmas Bins
-    print("\n--- (1) Detection vs Shift Sigmas Bins (@ 5% FA) ---")
+    print("\n--- (1) Detection vs Shift Sigmas Bins (@ 5% Validation-Derived FA) ---")
     sig_bins = cfg["evaluation"]["sigma_bins"]
     sig_labels = cfg["evaluation"]["sigma_labels"]
     test_meta["sig_bin"] = pd.cut(test_meta["shift_sigmas"], bins=sig_bins, labels=sig_labels)
@@ -559,10 +628,10 @@ def main():
     for sl in sig_labels:
         sub_mask = (test_meta["sig_bin"] == sl).values & (test_meta["label"] == 1).values
         cnt = np.sum(sub_mask)
-        det_rf = np.mean(rf_prim_test_scores[sub_mask] >= rf_prim_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_ae = np.mean(ae_prim_test_scores[sub_mask] >= ae_prim_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_m = np.mean(mahal_dist[sub_mask] >= mahal_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_z = np.mean(max_abs_z[sub_mask] >= z_th_5fa) * 100.0 if cnt > 0 else 0.0
+        det_rf = np.mean(rf_prim_flags_5[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_ae = np.mean(compute_flags(ae_prim_test_scores, ae_prim_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_m = np.mean(compute_flags(mahal_test, mahal_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_z = np.mean(compute_flags(max_abs_z_test, z_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
 
         sig_det_results["Counts"].append(cnt)
         sig_det_results["RF_Primary"].append(det_rf)
@@ -571,8 +640,8 @@ def main():
         sig_det_results["Max_Z"].append(det_z)
         print(f"{sl:<15} | {cnt:<6} | {det_rf:6.2f}%       | {det_ae:6.2f}%       | {det_m:6.2f}%       | {det_z:6.2f}%")
 
-    # 2. Feature Group Ablations
-    print("\n--- (2) Feature Group Ablation: Each Group Alone & Each Removed ---")
+    # 2. Feature Group Ablations with IDENTICAL tuned hyperparams: (n_estimators=300, max_depth=12, min_samples_leaf=1)
+    print("\n--- (2) Feature Group Ablations (Identical Tuned Hyperparams: 300 trees, depth 12, min leaf 1) ---")
     all_groups = ["a", "b", "c", "d1", "d2"]
     ablation_results = []
 
@@ -580,16 +649,26 @@ def main():
     for g in all_groups + ["d3"]:
         sw = {k: (k == g) for k in (all_groups + ["d3"])}
         cols_g = select_feature_columns(groups_dict, sw)
-        rf_g = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=seed, n_jobs=-1)
+        rf_g = RandomForestClassifier(
+            n_estimators=best_rf_params["n_estimators"],
+            max_depth=best_rf_params["max_depth"],
+            min_samples_leaf=best_rf_params["min_samples_leaf"],
+            random_state=seed,
+            n_jobs=-1
+        )
         rf_g.fit(df_all_feat[cols_g].values[train_mask], y_train)
         p_val_g = rf_g.predict_proba(df_all_feat[cols_g].values[val_mask])[:, 1]
         p_test_g = rf_g.predict_proba(df_all_feat[cols_g].values[test_mask])[:, 1]
 
         val_auc_g = roc_auc_score(y_val, p_val_g)
         test_auc_g = roc_auc_score(y_test, p_test_g)
-        th5_g = float(np.percentile(p_test_g[norm_mask_test], 95.0))
-        test_det5_g = np.mean(p_test_g[att_mask_test] >= th5_g) * 100.0
-        test_exact5_g = np.mean(p_test_g[exact_mask_test] >= th5_g) * 100.0
+
+        # Threshold from validation normals
+        th5_g = float(np.percentile(p_val_g[val_norm_mask], 95.0))
+        flags_g = compute_flags(p_test_g, th5_g)
+        real_fa_g = np.mean(flags_g[norm_mask_test]) * 100.0
+        test_det5_g = np.mean(flags_g[att_mask_test]) * 100.0
+        test_exact5_g = np.mean(flags_g[exact_mask_test]) * 100.0
 
         lbl = f"Group {g.upper()} alone" + (" (clean prev)" if g == "d3" else "")
         ablation_results.append({
@@ -597,6 +676,7 @@ def main():
             "N_Feat": len(cols_g),
             "Val_AUC": val_auc_g,
             "Test_AUC": test_auc_g,
+            "Real_FA": real_fa_g,
             "Test_Det5": test_det5_g,
             "Test_Exact5": test_exact5_g,
         })
@@ -605,33 +685,43 @@ def main():
     for g in all_groups:
         sw = {k: (k != g and k in all_groups) for k in (all_groups + ["d3"])}
         cols_rem = select_feature_columns(groups_dict, sw)
-        rf_rem = RandomForestClassifier(n_estimators=100, max_depth=8, random_state=seed, n_jobs=-1)
+        rf_rem = RandomForestClassifier(
+            n_estimators=best_rf_params["n_estimators"],
+            max_depth=best_rf_params["max_depth"],
+            min_samples_leaf=best_rf_params["min_samples_leaf"],
+            random_state=seed,
+            n_jobs=-1
+        )
         rf_rem.fit(df_all_feat[cols_rem].values[train_mask], y_train)
         p_val_rem = rf_rem.predict_proba(df_all_feat[cols_rem].values[val_mask])[:, 1]
         p_test_rem = rf_rem.predict_proba(df_all_feat[cols_rem].values[test_mask])[:, 1]
 
         val_auc_rem = roc_auc_score(y_val, p_val_rem)
         test_auc_rem = roc_auc_score(y_test, p_test_rem)
-        th5_rem = float(np.percentile(p_test_rem[norm_mask_test], 95.0))
-        test_det5_rem = np.mean(p_test_rem[att_mask_test] >= th5_rem) * 100.0
-        test_exact5_rem = np.mean(p_test_rem[exact_mask_test] >= th5_rem) * 100.0
+
+        th5_rem = float(np.percentile(p_val_rem[val_norm_mask], 95.0))
+        flags_rem = compute_flags(p_test_rem, th5_rem)
+        real_fa_rem = np.mean(flags_rem[norm_mask_test]) * 100.0
+        test_det5_rem = np.mean(flags_rem[att_mask_test]) * 100.0
+        test_exact5_rem = np.mean(flags_rem[exact_mask_test]) * 100.0
 
         ablation_results.append({
             "Config": f"Without {g.upper()} (All - {g.upper()})",
             "N_Feat": len(cols_rem),
             "Val_AUC": val_auc_rem,
             "Test_AUC": test_auc_rem,
+            "Real_FA": real_fa_rem,
             "Test_Det5": test_det5_rem,
             "Test_Exact5": test_exact5_rem,
         })
 
-    print(f"{'Ablation Setting':<32} | {'Features':<8} | {'Val AUC':<8} | {'Test AUC':<8} | {'Overall Det@5%':<15} | {'Exact AC Det@5%':<15}")
-    print("-" * 95)
+    print(f"{'Ablation Setting':<32} | {'Feats':<5} | {'Val AUC':<8} | {'Test AUC':<8} | {'Norm FA':<8} | {'Overall Det@5%':<15} | {'Exact AC Det@5%':<15}")
+    print("-" * 105)
     for ar in ablation_results:
-        print(f"{ar['Config']:<32} | {ar['N_Feat']:<8} | {ar['Val_AUC']:.4f}   | {ar['Test_AUC']:.4f}   | {ar['Test_Det5']:6.2f}%         | {ar['Test_Exact5']:6.2f}%")
+        print(f"{ar['Config']:<32} | {ar['N_Feat']:<5} | {ar['Val_AUC']:.4f}   | {ar['Test_AUC']:.4f}   | {ar['Real_FA']:5.2f}%   | {ar['Test_Det5']:6.2f}%         | {ar['Test_Exact5']:6.2f}%")
 
     # 3. Limited-Meter: Detection vs Shift Ratio
-    print("\n--- (3) Limited-Meter: Detection vs Shift Ratio ---")
+    print("\n--- (3) Limited-Meter: Detection vs Shift Ratio (@ 5% FA) ---")
     lm_mask = (test_meta["attack_type"] == "limited_meter").values
     test_meta["ratio_bin"] = pd.cut(test_meta["shift_ratio"], bins=cfg["evaluation"]["shift_ratio_bins"], labels=cfg["evaluation"]["shift_ratio_labels"])
 
@@ -641,11 +731,11 @@ def main():
     for rl in cfg["evaluation"]["shift_ratio_labels"]:
         sub_mask = lm_mask & (test_meta["ratio_bin"] == rl).values
         cnt = np.sum(sub_mask)
-        det_rf = np.mean(rf_prim_test_scores[sub_mask] >= rf_prim_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_ae = np.mean(ae_prim_test_scores[sub_mask] >= ae_prim_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_m = np.mean(mahal_dist[sub_mask] >= mahal_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_lnr = np.mean(lnr_test_scores[sub_mask] >= lnr_th_5fa) * 100.0 if cnt > 0 else 0.0
-        det_chi = np.mean(chi_test_scores[sub_mask] >= chi_th_5fa) * 100.0 if cnt > 0 else 0.0
+        det_rf = np.mean(rf_prim_flags_5[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_ae = np.mean(compute_flags(ae_prim_test_scores, ae_prim_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_m = np.mean(compute_flags(mahal_test, mahal_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_lnr = np.mean(compute_flags(lnr_test_scores, lnr_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
+        det_chi = np.mean(compute_flags(chi_test_scores, chi_th_5fa)[sub_mask]) * 100.0 if cnt > 0 else 0.0
 
         lm_ratio_results["Counts"].append(cnt)
         lm_ratio_results["RF_Primary"].append(det_rf)
@@ -682,8 +772,8 @@ def main():
     # 1. ROC Curves
     plt.figure(figsize=(12, 5))
     plt.subplot(1, 2, 1)
-    for m_name in ["RF w/o D3 (Primary)", "Autoencoder (All: A-D2)", "Mahalanobis (Ledoit-Wolf)", "Per-Hour Max-Z", "Calibrated LNR", "Chi-Square"]:
-        sc, _, _ = methods[m_name]
+    for m_name in ["RF w/o D3 (Primary)", "Autoencoder (All: A-D2)", "Mahalanobis (Ledoit-Wolf)", "Per-Hour Max-Z", "Calibrated LNR", "Chi-Square", "Range-Check (Envelope)"]:
+        sc, _, _, _ = methods[m_name]
         fpr, tpr, _ = roc_curve(y_test, sc)
         auc_val = roc_auc_score(y_test, sc)
         plt.plot(fpr, tpr, label=f"{m_name} (AUC={auc_val:.3f})")
@@ -695,8 +785,8 @@ def main():
     plt.grid(True, alpha=0.3)
 
     plt.subplot(1, 2, 2)
-    for m_name in ["RF w/o D3 (Primary)", "Autoencoder (All: A-D2)", "Mahalanobis (Ledoit-Wolf)", "Per-Hour Max-Z", "Calibrated LNR", "Chi-Square"]:
-        sc, _, _ = methods[m_name]
+    for m_name in ["RF w/o D3 (Primary)", "Autoencoder (All: A-D2)", "Mahalanobis (Ledoit-Wolf)", "Per-Hour Max-Z", "Calibrated LNR", "Chi-Square", "Range-Check (Envelope)"]:
+        sc, _, _, _ = methods[m_name]
         fpr, tpr, _ = roc_curve(y_test[exact_sub_mask], sc[exact_sub_mask])
         auc_val = roc_auc_score(y_test[exact_sub_mask], sc[exact_sub_mask])
         plt.plot(fpr, tpr, label=f"{m_name} (AUC={auc_val:.3f})")
@@ -736,7 +826,7 @@ def main():
     plt.hist(rf_prim_test_scores[norm_mask_test], bins=30, density=True, alpha=0.5, label="Normal", color="gray")
     plt.hist(rf_prim_test_scores[exact_mask_test], bins=30, density=True, alpha=0.6, label="Exact AC", color="crimson")
     plt.hist(rf_prim_test_scores[att_mask_test & ~exact_mask_test], bins=30, density=True, alpha=0.5, label="Other Attacks", color="royalblue")
-    plt.axvline(rf_prim_th_5fa, color="black", linestyle="--", label="5% FA Thresh")
+    plt.axvline(rf_prim_th_5fa, color="black", linestyle="--", label="Val 5% FA Thresh")
     plt.xlabel("RF Probability P(Attack)")
     plt.ylabel("Density")
     plt.title("RF Score Distribution")
@@ -746,17 +836,17 @@ def main():
     plt.hist(ae_prim_test_scores[norm_mask_test], bins=30, density=True, alpha=0.5, label="Normal", color="gray")
     plt.hist(ae_prim_test_scores[exact_mask_test], bins=30, density=True, alpha=0.6, label="Exact AC", color="crimson")
     plt.hist(ae_prim_test_scores[att_mask_test & ~exact_mask_test], bins=30, density=True, alpha=0.5, label="Other Attacks", color="royalblue")
-    plt.axvline(ae_prim_th_5fa, color="black", linestyle="--", label="5% FA Thresh")
+    plt.axvline(ae_prim_th_5fa, color="black", linestyle="--", label="Val 5% FA Thresh")
     plt.xlabel("Autoencoder Reconstruction MSE")
     plt.ylabel("Density")
     plt.title("Autoencoder Score Distribution")
     plt.legend(fontsize=7)
 
     plt.subplot(1, 3, 3)
-    plt.hist(mahal_dist[norm_mask_test], bins=30, density=True, alpha=0.5, label="Normal", color="gray")
-    plt.hist(mahal_dist[exact_mask_test], bins=30, density=True, alpha=0.6, label="Exact AC", color="crimson")
-    plt.hist(mahal_dist[att_mask_test & ~exact_mask_test], bins=30, density=True, alpha=0.5, label="Other Attacks", color="royalblue")
-    plt.axvline(mahal_th_5fa, color="black", linestyle="--", label="5% FA Thresh")
+    plt.hist(mahal_test[norm_mask_test], bins=30, density=True, alpha=0.5, label="Normal", color="gray")
+    plt.hist(mahal_test[exact_mask_test], bins=30, density=True, alpha=0.6, label="Exact AC", color="crimson")
+    plt.hist(mahal_test[att_mask_test & ~exact_mask_test], bins=30, density=True, alpha=0.5, label="Other Attacks", color="royalblue")
+    plt.axvline(mahal_th_5fa, color="black", linestyle="--", label="Val 5% FA Thresh")
     plt.xlabel("Mahalanobis Distance D_M")
     plt.ylabel("Density")
     plt.title("Mahalanobis Score Distribution")
@@ -800,7 +890,7 @@ def main():
     plt.close()
     print(f"  Saved: {res_dir}/limited_meter_shift_ratio.png")
 
-    print("\nTask 8 pipeline completed successfully.")
+    print("\nTask 8b execution finished successfully.")
 
 
 if __name__ == "__main__":

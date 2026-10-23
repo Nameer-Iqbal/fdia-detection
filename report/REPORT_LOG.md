@@ -1087,14 +1087,14 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
 
 ---
 
-## Task 8: Model Benchmarking, Tuning, and Comparative Evaluation (Dataset v2)
+## Task 8 & 8b: Model Benchmarking, Tuning, and Comparative Evaluation (Dataset v2)
 **Date:** 2026-10-23  
-**Status:** Completed and Verified  
+**Status:** Completed and Verified (Updated with Task 8b corrections)  
 **Execution Script:** `python -u python/run_task8.py`  
 **Configuration File:** `configs/models.toml`
 
 ### 1. PART 1: Random Forest (Supervised) Tuning and Permutation Importance
-- **Validation Tuning:** Evaluated a grid of candidate hyperparameters strictly on the VALIDATION split ($N = 2,000$ rows) using ROC-AUC. Test split was strictly held out.
+- **Validation Tuning:** Evaluated candidate hyperparameters strictly on the VALIDATION split ($N = 2,000$ rows) using ROC-AUC (test split held out).
   | Candidate Configuration | Validation ROC-AUC |
   |---|---|
   | `n_est=100, max_depth=6, min_leaf=1` | 0.8972 |
@@ -1110,13 +1110,18 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
   | **`n_est=300, max_depth=12, min_leaf=1` (Chosen)** | **0.9240** |
   | `n_est=300, max_depth=12, min_leaf=3` | 0.9233 |
 
+- **Thresholding Rule (Task 8b Uniform Rule):**
+  Thresholds for all models are derived from the 95th and 99th percentiles of scores on VALIDATION normal rows ($N = 1,000$, `split == 'val'` and `label == 0`).
+  - Validation Normal 5% FA Threshold: **`0.365035`** (Realized normal test FA: **`2.90%`**, 29 / 1,000).
+  - Validation Normal 1% FA Threshold: **`0.444420`** (Realized normal test FA: **`0.80%`**, 8 / 1,000).
+
 - **Test Performance of Primary Supervised RF (A+B+C+D1+D2, 1,110 features):**
   - **Overall ROC-AUC ($N = 2,000$):** **`0.9317` [0.9199, 0.9436]**
   - **Exact AC ROC-AUC ($N = 1,332$):** **`0.9696` [0.9583, 0.9801]**
-  - **Detection @ 5% Normal FA ($th = 0.3807$):** **`82.50%` [80.20%, 84.90%]**
-  - **Detection @ 1% Normal FA ($th = 0.6094$):** **`77.70%` [75.20%, 80.30%]**
-  - **Exact AC Detection @ 5% FA:** **`87.95%` [84.60%, 91.30%]**
-  - **Effective Attacks Detection @ 5% FA:** **`86.09%` [83.70%, 88.20%]**
+  - **Overall Detection @ 5% Validation FA ($th = 0.3650$):** **`83.50%` [81.30%, 85.80%]**
+  - **Overall Detection @ 1% Validation FA ($th = 0.4444$):** **`79.60%` [77.10%, 82.00%]**
+  - **Exact AC Detection @ 5% Validation FA:** **`86.75%` [83.40%, 90.10%]**
+  - **Effective Attacks Detection @ 5% Validation FA:** **`87.13%` [84.90%, 89.20%]**
 
 - **Grouped Permutation Importance on Validation Split (5 repeats, seed=42):**
   *Validation Baseline ROC-AUC:* `0.9240`
@@ -1128,13 +1133,13 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
   | **Group A** | 328 | Raw & Normalized Residuals ($r, r^N$) | **+0.0309** | 0.0044 |
   | **Group B** | 163 | Graph & Physical Consistency Mismatch ($\omega$) | **+0.0218** | 0.0049 |
 
-  *Insight on Feature Impact:* Measurement sensitivity projections ($S$) and raw operating coordinates ($D1$) have the largest individual predictive weight. However, every engineered feature group contributes a statistically significant positive drop ($\Delta \text{AUC} > 0.02$), confirming that joint multi-group modeling outperforms residual-only or coordinate-only detection.
+  *Insight on Feature Impact:* Measurement sensitivity projections ($S$) and raw operating coordinates ($D1$) have the largest individual predictive weight. However, every engineered feature group contributes a statistically significant positive drop ($\Delta \text{AUC} > 0.02$).
 
 - **Twin-Reference Benchmark: RF with Feature Group D3 (1,338 features):**
   - Overall ROC-AUC: **`0.9317` [0.9196, 0.9432]**
   - Exact AC ROC-AUC: **`0.9674` [0.9560, 0.9781]**
-  - Detection @ 5% FA: **`82.80%` [80.40%, 85.10%]**
-  - *Caveat:* Group D3 computes $\Delta z = z_t - z_{t-1}$ and $\Delta x = \hat{x}_t - \hat{x}_{t-1}$, which explicitly assumes that the prior sample ($t-1$) was verified clean. When all features (A-D2) are present, D3 provides negligible marginal gain (+0.30% detection), indicating that the static multi-group spatial representations already capture the physical stealth signatures without temporal coupling.
+  - Detection @ 5% Validation FA: **`83.40%` [81.20%, 85.70%]** (Realized normal test FA: **`2.70%`**)
+  - *Caveat:* Group D3 computes $\Delta z = z_t - z_{t-1}$ and $\Delta x = \hat{x}_t - \hat{x}_{t-1}$, which explicitly assumes that the prior sample ($t-1$) was verified clean. When all features (A-D2) are present, D3 provides negligible marginal gain (+0.30% detection), indicating that static spatial representations capture the physical stealth signatures without temporal coupling.
 
 ---
 
@@ -1149,142 +1154,135 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
 
 - **Autoencoder (i): Trained on D1+D2 (456 inputs):**
   - Architecture: Encoder: $456 \to 128 \to 64 \to B$; Decoder: $B \to 64 \to 128 \to 456$.
-  - Bottleneck Candidates: $16 \to 0.5457$, $32 \to 0.4774$.
-  - **Chosen Bottleneck:** **`32`** (lowest validation reconstruction MSE).
+  - Bottleneck Candidates: $16 \to 0.5457$, $32 \to 0.4774$. **Chosen: `32`**.
   - Validation Normal Thresholds: 5% FA = `0.586598`, 1% FA = `0.619121`.
-  - Empirical Normal Test False Alarm: **`4.20%`** (@ 5% threshold), **`1.70%`** (@ 1% threshold).
-  - Overall ROC-AUC ($N = 2,000$): **`0.9341` [0.9217, 0.9457]**
-  - Exact AC ROC-AUC: **`0.9683` [0.9531, 0.9815]**
-  - Overall Detection @ 5% FA: **`85.30%` [83.10%, 87.40%]**
-  - Overall Detection @ 1% FA: **`84.20%` [82.00%, 86.40%]**
+  - Realized Normal Test False Alarm: **`4.20%`** (@ 5% threshold), **`1.70%`** (@ 1% threshold).
+  - Overall ROC-AUC ($N = 2,000$): **`0.9341` [0.9217, 0.9457]** | Exact AC AUC: **`0.9683` [0.9531, 0.9815]**
+  - Overall Detection @ 5% FA: **`85.30%` [83.10%, 87.40%]** | Overall Det @ 1% FA: **`84.20%` [82.00%, 86.40%]**
   - Exact AC Detection @ 5% FA: **`90.96%` [88.00%, 94.00%]**
 
 - **Autoencoder (ii): Trained on All Features (A+B+C+D1+D2, 1,110 inputs):**
   - Architecture: Encoder: $1110 \to 256 \to 128 \to B$; Decoder: $B \to 128 \to 256 \to 1110$.
-  - Bottleneck Candidates: $32 \to 0.5730$, $64 \to 0.3786$.
-  - **Chosen Bottleneck:** **`64`** (lowest validation reconstruction MSE).
+  - Bottleneck Candidates: $32 \to 0.5730$, $64 \to 0.3786$. **Chosen: `64`**.
   - Validation Normal Thresholds: 5% FA = `0.475096`, 1% FA = `0.529026`.
-  - Empirical Normal Test False Alarm: **`5.20%`** (@ 5% threshold), **`1.10%`** (@ 1% threshold).
-  - Overall ROC-AUC ($N = 2,000$): **`0.9349` [0.9223, 0.9464]**
-  - Exact AC ROC-AUC: **`0.9727` [0.9588, 0.9836]**
-  - Overall Detection @ 5% FA: **`84.70%` [82.50%, 86.80%]**
-  - Overall Detection @ 1% FA: **`82.80%` [80.50%, 85.10%]**
+  - Realized Normal Test False Alarm: **`5.20%`** (@ 5% threshold), **`1.10%`** (@ 1% threshold).
+  - Overall ROC-AUC ($N = 2,000$): **`0.9349` [0.9223, 0.9464]** | Exact AC AUC: **`0.9727` [0.9588, 0.9836]**
+  - Overall Detection @ 5% FA: **`84.70%` [82.50%, 86.80%]** | Overall Det @ 1% FA: **`82.80%` [80.50%, 85.10%]**
   - Exact AC Detection @ 5% FA: **`90.36%` [87.00%, 93.40%]**
-
-- **Core Unsupervised Finding:**
-  The unsupervised Autoencoder trained *without ever observing an attack* matches or slightly exceeds the supervised Random Forest on Exact AC attacks ($90.96\%$ vs $87.95\%$ @ 5% FA). Because exact AC stealth attacks satisfy the non-linear measurement equations by displacing the operating point off the grid's normal operational manifold, the Autoencoder is physically unable to reconstruct the displaced states and measurements, generating large residual reconstruction errors.
 
 ---
 
-### 3. PART 3: Comprehensive Comparison Tables
+### 3. PART 3: Comprehensive Comparison Tables (Task 8b Corrected)
+
+#### Explanation of Previous Issues Resolved in Task 8b:
+1. **Range-Check Bug Resolution:** In the initial Task 8 run, `rc_th_5fa = np.percentile(rc_val_viol, 95.0)` evaluated to `0.0`. Testing `scores >= 0.0` was trivially true for 100% of samples (since non-negative). Fixed by requiring strict envelope breaches (`scores > 0.0` when `th == 0.0`), properly restoring the true Range-Check performance (realized test normal FA: **`0.10%`**, exact AC detection: **`4.22%`**).
+2. **Chi-Square ROC-AUC Discrepancy Clarification:** The figure `0.8147` in previous discussions was the Per-Hour Max-Z baseline AUC (`0.8152` [0.7986, 0.8318]), which was adjacent to Chi-Square. Chi-Square's true mathematical test ROC-AUC on objective $J$ across dataset v2 is **`0.6266` [0.6111, 0.6412]** (due to 33.2% exact stealth attacks where $\Delta J = 0.0$ and AUC is strictly `0.5004`).
+3. **Uniform Thresholding Rule:** All methods now use thresholds derived strictly from the $N = 1,000$ validation normal rows. Realized false alarm rates on the test normal rows ($N = 1,000$) are reported in the table.
 
 #### Table 1: Standard Test Split Benchmark ($N = 2,000$ rows: 1,000 Normal, 1,000 Attacked)
 Evaluated with 1,000 group-bootstrap 95% confidence intervals:
 
-| Method | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
-|---|---|---|---|---|---|---|
-| **Chi-Square ($\chi^2$)** | 0.6266 [0.6111, 0.6412] | 0.5004 [0.4753, 0.5268] | 26.20% [23.7, 29.0] | 22.30% [19.9, 25.0] | 4.52% [2.1, 6.9] | 27.20% [24.3, 30.0] |
-| **Calibrated LNR** | 0.6265 [0.6107, 0.6416] | 0.4998 [0.4747, 0.5247] | 25.90% [23.2, 28.7] | 20.80% [18.4, 23.2] | 6.33% [3.9, 9.0] | 26.88% [24.1, 29.8] |
-| **Range-Check (Envelope)** | 0.5330 [0.5260, 0.5410] | 0.5206 [0.5106, 0.5318] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] |
-| **Per-Hour Max-Z** | 0.8152 [0.7990, 0.8317] | 0.8088 [0.7791, 0.8406] | 57.70% [54.6, 61.0] | 53.60% [50.6, 56.7] | 56.93% [51.8, 62.3] | 60.25% [57.2, 63.1] |
-| **Mahalanobis (Ledoit-Wolf)** | 0.9062 [0.8928, 0.9191] | 0.9312 [0.9132, 0.9487] | 76.90% [74.3, 79.6] | 72.60% [69.8, 75.4] | 81.33% [77.1, 85.5] | 80.23% [77.6, 82.6] |
-| **Autoencoder (D1+D2)** | 0.9341 [0.9217, 0.9457] | 0.9683 [0.9531, 0.9815] | **85.30% [83.1, 87.4]** | **84.20% [82.0, 86.4]** | **90.96% [88.0, 94.0]** | **88.91% [86.9, 90.9]** |
-| **Autoencoder (All: A-D2)** | **0.9349 [0.9223, 0.9464]** | **0.9727 [0.9588, 0.9836]** | 84.70% [82.5, 86.8] | 82.80% [80.5, 85.1] | 90.36% [87.0, 93.4] | 88.39% [86.3, 90.5] |
-| **RF w/o D3 (Primary)** | 0.9317 [0.9199, 0.9436] | 0.9696 [0.9583, 0.9801] | 82.50% [80.2, 84.9] | 77.70% [75.2, 80.3] | 87.95% [84.6, 91.3] | 86.09% [83.7, 88.2] |
-| **RF with D3 (Clean Prev)** | 0.9317 [0.9196, 0.9432] | 0.9674 [0.9560, 0.9781] | 82.80% [80.4, 85.1] | 78.40% [75.9, 81.1] | 88.55% [85.2, 91.9] | 86.19% [83.8, 88.3] |
+| Method | Realized Normal FA (5% / 1% th) | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
+|---|---|---|---|---|---|---|---|
+| **Chi-Square ($\chi^2$)** | 3.60% / 0.10% | 0.6266 [0.6111, 0.6412] | 0.5004 [0.4753, 0.5268] | 24.30% [21.8, 27.0] | 15.60% [13.4, 18.0] | 3.61% [1.5, 5.7] | 25.21% [22.4, 28.0] |
+| **Calibrated LNR** | 6.50% / 1.00% | 0.6265 [0.6107, 0.6416] | 0.4998 [0.4747, 0.5247] | 28.20% [25.4, 30.9] | 20.80% [18.4, 23.2] | 8.13% [5.4, 11.1] | 29.29% [26.4, 32.2] |
+| **Range-Check (Envelope)** | 0.10% / 0.10% | 0.5330 [0.5260, 0.5410] | 0.5206 [0.5106, 0.5318] | 6.70% [5.2, 8.4] | 6.70% [5.2, 8.4] | 4.22% [2.4, 6.3] | 6.59% [5.1, 8.2] |
+| **Per-Hour Max-Z** | 5.30% / 0.50% | 0.8152 [0.7990, 0.8317] | 0.8088 [0.7791, 0.8406] | 58.10% [55.0, 61.4] | 49.30% [46.2, 52.3] | 57.53% [52.4, 62.7] | 60.67% [57.5, 63.5] |
+| **Mahalanobis (Ledoit-Wolf)** | 6.70% / 1.50% | 0.9062 [0.8928, 0.9191] | 0.9312 [0.9132, 0.9487] | 78.40% [75.9, 81.0] | 73.80% [71.1, 76.5] | 82.83% [78.9, 86.7] | 81.80% [79.2, 84.1] |
+| **Autoencoder (D1+D2)** | 4.20% / 1.70% | 0.9341 [0.9217, 0.9457] | 0.9683 [0.9531, 0.9815] | **85.30% [83.1, 87.4]** | **84.20% [82.0, 86.4]** | **90.96% [88.0, 94.0]** | **88.91% [86.9, 90.9]** |
+| **Autoencoder (All: A-D2)** | 5.20% / 1.10% | **0.9349 [0.9223, 0.9464]** | **0.9727 [0.9588, 0.9836]** | 84.70% [82.5, 86.8] | 82.80% [80.5, 85.1] | 90.36% [87.0, 93.4] | 88.39% [86.3, 90.5] |
+| **RF w/o D3 (Primary)** | 2.90% / 0.80% | 0.9317 [0.9199, 0.9436] | 0.9696 [0.9583, 0.9801] | 83.50% [81.3, 85.8] | 79.60% [77.1, 82.0] | 86.75% [83.4, 90.1] | 87.13% [84.9, 89.2] |
+| **RF with D3 (Clean Prev)** | 2.70% / 0.70% | 0.9317 [0.9196, 0.9432] | 0.9674 [0.9560, 0.9781] | 83.40% [81.2, 85.7] | 80.00% [77.5, 82.5] | 86.75% [83.4, 90.1] | 86.82% [84.6, 88.9] |
 
-*Table 1 Per-Attack-Type Detection Rate @ 5% Normal FA:*
+*Table 1 Per-Attack-Type Detection Rate @ 5% Validation Normal FA:*
 | Method | `exact_single` ($N=179$) | `exact_multi` ($N=153$) | `limited_meter` ($N=153$) | `lin_single` ($N=175$) | `lin_multi` ($N=192$) | `random` ($N=148$) |
 |---|---|---|---|---|---|---|
-| **Chi-Square** | 3.91% | 5.23% | 13.07% | 18.29% | 27.60% | 95.95% |
-| **Calibrated LNR** | 5.59% | 7.19% | 11.76% | 16.57% | 27.60% | 93.24% |
-| **Range-Check** | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% |
-| **Per-Hour Max-Z** | 49.72% | 65.36% | 32.68% | 51.43% | 81.25% | 62.16% |
-| **Mahalanobis** | 73.18% | 90.85% | 33.33% | 76.57% | 95.83% | 87.84% |
+| **Chi-Square** | 2.79% | 4.58% | 11.11% | 16.57% | 25.00% | 94.59% |
+| **Calibrated LNR** | 6.15% | 10.46% | 13.73% | 18.86% | 28.65% | 95.27% |
+| **Range-Check** | **0.00%** | **9.15%** | 15.03% | **0.00%** | 9.90% | 6.08% |
+| **Per-Hour Max-Z** | 50.84% | 65.36% | 32.68% | 52.00% | 81.25% | 62.16% |
+| **Mahalanobis** | 75.42% | 91.50% | 34.64% | 79.43% | 96.88% | 88.51% |
 | **Autoencoder (D1+D2)** | **83.80%** | **99.35%** | 39.87% | **88.57%** | **98.96%** | **97.97%** |
 | **Autoencoder (All)** | 82.68% | **99.35%** | 37.91% | **88.57%** | **98.96%** | 97.30% |
-| **RF w/o D3** | 78.77% | 98.69% | 39.87% | 78.86% | 98.44% | **97.97%** |
-| **RF with D3** | 79.33% | **99.35%** | **41.18%** | 79.43% | 97.92% | 97.30% |
+| **RF w/o D3** | 76.54% | 98.69% | 37.91% | 76.57% | 97.92% | 97.30% |
+| **RF with D3** | 76.54% | 98.69% | 37.25% | 76.57% | 97.92% | 97.30% |
 
 ---
 
 #### Table 2: Unseen-Attack Scheme Benchmark ($N = 4,026$ rows: 1,000 Normal, 3,026 Attacked)
 RF was trained strictly on `split_unseen == 'train'` ($N = 4,463$, containing random and linearised attacks only). The exact AC and limited-meter attacks were completely held out and never seen during training.
 
-| Method | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
-|---|---|---|---|---|---|---|
-| **Chi-Square** | 0.5704 [0.5560, 0.5863] | 0.5072 [0.4885, 0.5277] | 14.61% [13.3, 15.9] | 11.00% [9.8, 12.2] | 5.01% [4.0, 6.1] | 15.40% [13.9, 16.6] |
-| **Calibrated LNR** | 0.5707 [0.5554, 0.5872] | 0.5120 [0.4930, 0.5324] | 13.85% [12.5, 15.1] | 10.05% [9.0, 11.2] | 3.99% [3.2, 5.0] | 14.51% [13.2, 15.9] |
-| **Range-Check** | 0.5294 [0.5255, 0.5337] | 0.5329 [0.5269, 0.5386] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] | 100.00% [100.0, 100.0] |
-| **Mahalanobis** | 0.8386 [0.8275, 0.8494] | 0.9249 [0.9147, 0.9343] | 69.07% [67.4, 70.6] | 65.96% [64.1, 67.5] | 81.05% [79.2, 83.1] | 74.10% [72.4, 75.7] |
-| **Autoencoder (D1+D2)** | 0.8837 [0.8733, 0.8929] | 0.9630 [0.9561, 0.9700] | **78.09% [76.5, 79.5]** | **76.67% [75.0, 78.2]** | **91.48% [90.2, 92.6]** | **83.61% [82.3, 85.0]** |
-| **Autoencoder (All)** | 0.8667 [0.8549, 0.8766] | 0.9612 [0.9543, 0.9681] | 77.20% [75.5, 78.7] | 75.02% [73.4, 76.6] | 90.82% [89.5, 92.1] | 82.65% [81.2, 84.0] |
-| **RF (Seen -> Held-Out)** | **0.8945 [0.8852, 0.9030]** | **0.9706 [0.9649, 0.9762]** | 77.50% [75.9, 79.0] | 69.40% [67.7, 71.1] | 90.46% [89.0, 91.8] | 82.97% [81.7, 84.3] |
+| Method | Realized Normal FA (5% / 1% th) | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
+|---|---|---|---|---|---|---|---|
+| **Chi-Square** | 3.60% / 0.10% | 0.5704 [0.5560, 0.5863] | 0.5072 [0.4885, 0.5277] | 13.52% [12.2, 14.9] | 9.32% [8.2, 10.4] | 3.87% [3.0, 4.8] | 14.27% [12.9, 15.5] |
+| **Calibrated LNR** | 6.50% / 1.00% | 0.5707 [0.5554, 0.5872] | 0.5120 [0.4930, 0.5324] | 15.80% [14.4, 17.1] | 9.75% [8.7, 10.9] | 5.96% [4.9, 7.2] | 16.47% [15.1, 17.9] |
+| **Range-Check** | 0.10% / 0.10% | 0.5294 [0.5255, 0.5337] | 0.5329 [0.5269, 0.5386] | 5.98% [5.2, 6.8] | 5.98% [5.2, 6.8] | 6.67% [5.5, 7.9] | 6.42% [5.5, 7.3] |
+| **Mahalanobis** | 6.70% / 1.50% | 0.8386 [0.8275, 0.8494] | 0.9249 [0.9147, 0.9343] | 70.13% [68.5, 71.7] | 66.19% [64.4, 67.8] | 82.00% [80.2, 83.9] | 75.20% [73.5, 76.8] |
+| **Autoencoder (D1+D2)** | 4.20% / 1.70% | 0.8837 [0.8733, 0.8929] | 0.9630 [0.9561, 0.9700] | **78.09% [76.5, 79.5]** | **76.67% [75.0, 78.2]** | **91.48% [90.2, 92.6]** | **83.61% [82.3, 85.0]** |
+| **Autoencoder (All)** | 5.20% / 1.10% | 0.8667 [0.8549, 0.8766] | 0.9612 [0.9543, 0.9681] | 77.20% [75.5, 78.7] | 75.02% [73.4, 76.6] | 90.82% [89.5, 92.1] | 82.65% [81.2, 84.0] |
+| **RF (Seen -> Held-Out)** | 4.20% / 0.70% | **0.8945 [0.8852, 0.9030]** | **0.9706 [0.9649, 0.9762]** | 76.67% [75.1, 78.2] | 68.64% [67.0, 70.4] | 89.57% [88.0, 90.9] | 82.08% [80.7, 83.5] |
 
-*Table 2 Detection Rate on Completely Held-Out and Seen Attack Types @ 5% FA:*
+*Table 2 Detection Rate on Completely Held-Out and Seen Attack Types @ 5% Validation FA:*
 | Method | **HELD-OUT** `exact_single` ($N=847$) | **HELD-OUT** `exact_multi` ($N=831$) | **HELD-OUT** `limited_meter` ($N=833$) | `lin_single` ($N=175$) | `lin_multi` ($N=192$) | `random` ($N=148$) |
 |---|---|---|---|---|---|---|
-| **Chi-Square** | 5.31% | 4.69% | 15.73% | 18.29% | 27.60% | 95.95% |
-| **Calibrated LNR** | 3.19% | 4.81% | 15.85% | 16.57% | 27.60% | 93.24% |
-| **Range-Check** | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% | 100.00% |
-| **Mahalanobis** | 72.96% | 89.29% | 33.85% | 76.57% | 95.83% | 87.84% |
+| **Chi-Square** | 3.78% | 3.97% | 14.89% | 17.14% | 26.04% | 94.59% |
+| **Calibrated LNR** | 5.43% | 6.50% | 17.89% | 18.86% | 28.65% | 95.27% |
+| **Range-Check** | 3.90% | 9.51% | 2.40% | 6.29% | 15.10% | 6.08% |
+| **Mahalanobis** | 74.14% | 90.01% | 34.81% | 79.43% | 96.88% | 88.51% |
 | **Autoencoder (D1+D2)** | **84.30%** | 98.80% | 40.58% | **88.57%** | **98.96%** | **97.97%** |
 | **Autoencoder (All)** | 83.47% | 98.32% | 38.78% | **88.57%** | **98.96%** | 97.30% |
-| **RF (Seen -> Held-Out)** | 81.94% | **99.16%** | **41.90%** | 82.29% | 98.44% | **97.97%** |
-
-*Key Generalization Insight:*
-Even though the Random Forest was trained exclusively on crude random and linearised attacks, it detects **`81.94%` of unseen exact single-bus attacks** and **`99.16%` of unseen exact multi-bus attacks**. Because the physical displacement patterns learned on linearised attacks transfer directly to exact AC stealth attacks, the supervised model generalizes out-of-distribution without suffering performance degradation.
+| **RF (Seen -> Held-Out)** | 80.17% | **99.16%** | **41.42%** | 78.86% | 98.44% | **97.97%** |
 
 ---
 
 ### 4. PART 4: Extra Experiments
 
-#### (1) Detection vs Attack Size Bins (`shift_sigmas`) at 5% False Alarm Point
+#### (1) Detection vs Attack Size Bins (`shift_sigmas`) at 5% Validation Normal FA
 | Shift Sigmas Bin | Count ($N$) | RF Primary (A-D2) | Autoencoder (All) | Mahalanobis (Ledoit-Wolf) | Per-Hour Max-Z |
 |---|---|---|---|---|---|
-| **< 1.0 $\sigma$** | 184 | **62.50%** | **61.41%** | 38.59% | **3.80%** (Falls to floor) |
-| **1.0 - 2.0 $\sigma$** | 102 | 81.37% | 81.37% | 78.43% | 10.78% |
-| **2.0 - 3.0 $\sigma$** | 59 | 77.97% | 88.14% | 84.75% | 45.76% |
-| **3.0 - 5.0 $\sigma$** | 87 | 74.71% | 78.16% | 75.86% | 62.07% |
-| **5.0 - 10.0 $\sigma$** | 139 | 87.77% | 92.09% | 84.89% | 92.81% |
-| **> 10.0 $\sigma$** | 231 | 87.88% | 92.21% | 90.04% | 91.34% |
+| **< 1.0 $\sigma$** | 184 | **57.61%** | **61.41%** | 41.85% | **4.35%** (Falls below floor) |
+| **1.0 - 2.0 $\sigma$** | 102 | 80.39% | 81.37% | 80.39% | 10.78% |
+| **2.0 - 3.0 $\sigma$** | 59 | 77.97% | 88.14% | 84.75% | 49.15% |
+| **3.0 - 5.0 $\sigma$** | 87 | 74.71% | 78.16% | 77.01% | 62.07% |
+| **5.0 - 10.0 $\sigma$** | 139 | 87.05% | 92.09% | 86.33% | 92.81% |
+| **> 10.0 $\sigma$** | 231 | 87.45% | 92.21% | 91.34% | 91.34% |
 
 *Where detectors fall to the false alarm floor:*
-- **Per-Hour Max-Z falls directly to the 5% floor ($3.80\%$)** for sub-sigma attacks ($< 1.0\sigma$) because coordinate-wise deviations remain within nominal hourly bounds.
-- **Mahalanobis drops to $38.59\%$**, preserving partial detection through inter-bus covariance constraints.
-- **RF and Autoencoder maintain $> 61\%$ detection** on sub-sigma attacks by leveraging non-linear physical cross-correlations across the grid.
+- **Per-Hour Max-Z drops to $4.35\%$** for sub-sigma attacks ($< 1.0\sigma$) because coordinate-wise deviations remain within nominal hourly bounds.
+- **Mahalanobis maintains $41.85\%$**, capturing inter-bus covariance constraints.
+- **RF and Autoencoder maintain $57-61\%$ detection** on sub-sigma attacks by modeling non-linear physical cross-correlations.
 
-#### (2) Feature Group Ablation
-Evaluated with Random Forest (100 trees, max depth 8):
-| Ablation Setting | Features | Validation AUC | Test ROC-AUC | Overall Det @ 5% FA | Exact AC Det @ 5% FA |
-|---|---|---|---|---|---|
-| **Group A alone (Residuals)** | 328 | 0.6233 | 0.6337 | 28.30% | 5.72% |
-| **Group B alone (Consistency)** | 163 | 0.9106 | 0.9148 | 75.80% | 86.14% |
-| **Group C alone (Sensitivity)** | 163 | 0.9059 | 0.9085 | 69.80% | 75.30% |
-| **Group D1 alone (Raw $z, \hat{x}$)** | 228 | 0.9037 | 0.9018 | 75.60% | 80.72% |
-| **Group D2 alone (Forecast Dev)** | 228 | 0.8988 | 0.8908 | 74.20% | 79.22% |
-| **Group D3 alone (Change Prev)** | 228 | 0.8823 | 0.8908 | 68.90% | 72.89% |
-| **Without Group A (All - A)** | 782 | 0.9031 | 0.8993 | 75.10% | 79.52% |
-| **Without Group B (All - B)** | 947 | 0.9102 | 0.9009 | 75.50% | 75.30% |
-| **Without Group C (All - C)** | 947 | 0.9148 | 0.9178 | 77.40% | 80.12% |
-| **Without Group D1 (All - D1)** | 882 | 0.9138 | 0.9174 | 77.90% | 81.02% |
-| **Without Group D2 (All - D2)** | 882 | 0.9171 | 0.9169 | 78.00% | 80.42% |
+#### (2) Feature Group Ablation (Task 8b Re-Run with Identical Tuned RF Hyperparameters)
+Trained with identical hyperparameters as the primary model (`n_estimators = 300, max_depth = 12, min_samples_leaf = 1`):
+| Ablation Setting | Feats | Validation AUC | Test ROC-AUC | Realized Normal FA | Overall Det @ 5% FA | Exact AC Det @ 5% FA |
+|---|---|---|---|---|---|---|
+| **Group A alone (Residuals)** | 328 | 0.6323 | 0.6360 | 4.50% | 28.30% | 5.72% |
+| **Group B alone (Consistency)** | 163 | 0.9151 | 0.9203 | 4.00% | 76.90% | 87.35% |
+| **Group C alone (Sensitivity)** | 163 | 0.9179 | 0.9226 | 5.70% | 78.00% | 87.65% |
+| **Group D1 alone (Raw $z, \hat{x}$)** | 228 | 0.9166 | 0.9219 | 3.60% | 78.50% | 85.54% |
+| **Group D2 alone (Forecast Dev)** | 228 | 0.9172 | 0.9175 | 3.70% | 78.00% | 84.64% |
+| **Group D3 alone (Change Prev)** | 228 | 0.8942 | 0.9041 | 4.80% | 74.40% | 82.53% |
+| **Without Group A (All - A)** | 782 | 0.9269 | 0.9316 | 4.30% | 81.60% | 90.06% |
+| **Without Group B (All - B)** | 947 | 0.9232 | 0.9247 | 3.30% | 81.10% | 86.45% |
+| **Without Group C (All - C)** | 947 | 0.9232 | 0.9281 | 3.90% | 81.10% | 85.54% |
+| **Without Group D1 (All - D1)** | 882 | 0.9265 | 0.9330 | 2.80% | 81.20% | 86.75% |
+| **Without Group D2 (All - D2)** | 882 | 0.9273 | 0.9302 | 3.00% | 81.40% | 87.35% |
 
 *Key Findings from Ablation:*
-1. Group A alone achieves only **$5.72\%$** Exact AC detection (confirming conventional residuals are completely blind to mathematical stealth).
-2. Group B alone (physical consistency mismatch) achieves the highest single-group Exact AC detection (**$86.14\%$**).
-3. Combining all groups gives optimal robustness against all attack families simultaneously ($82.50\%$ overall, $87.95\%$ exact AC).
+1. Group A alone achieves only **$5.72\%$** Exact AC detection (confirming conventional residuals are blind to mathematical stealth).
+2. Group B alone (consistency) and Group C alone (sensitivity) each achieve $> 87\%$ Exact AC detection.
+3. Removing Group A yields the highest Exact AC detection ($90.06\%$) because residuals add noise against stealth attacks, while combining all groups gives optimal overall defense across both stealthy and crude random attacks ($83.50\%$ overall, $86.75\%$ exact AC).
 
-#### (3) Limited-Meter Attacks: Detection vs Shift Ratio
+#### (3) Limited-Meter Attacks: Detection vs Shift Ratio (@ 5% Validation Normal FA)
 Evaluated on limited-meter attacks in the standard test split ($N = 153$):
 | Shift Ratio Bin ($\text{Achieved} / \text{Target}$) | Count ($N$) | RF Primary | Autoencoder (All) | Mahalanobis | Calibrated LNR | Chi-Square |
 |---|---|---|---|---|---|---|
-| **$\le 0.25$** | 85 | 14.12% | 12.94% | 9.41% | 7.06% | 7.06% |
-| **$0.25 - 0.50$** | 32 | 62.50% | 59.38% | 53.12% | 18.75% | 25.00% |
-| **$0.50 - 0.75$** | 19 | 89.47% | 84.21% | 78.95% | 21.05% | 21.05% |
-| **$> 0.75$** | 14 | 85.71% | 85.71% | 78.57% | 14.29% | 14.29% |
+| **$\le 0.25$** | 85 | 11.76% | 12.94% | 11.76% | 8.24% | 7.06% |
+| **$0.25 - 0.50$** | 32 | 62.50% | 59.38% | 53.12% | 18.75% | 21.88% |
+| **$0.50 - 0.75$** | 19 | 89.47% | 84.21% | 78.95% | 26.32% | 21.05% |
+| **$> 0.75$** | 14 | 78.57% | 85.71% | 78.57% | 28.57% | 14.29% |
 
-*Conclusion:* When the attacker cannot achieve significant state change ($\text{ratio} \le 0.25$), detectors remain near the false alarm floor. As soon as the attacker shifts states by more than $25\%$ of target ($\text{ratio} > 0.25$), detection jumps above $60\%$, reaching $85-89\%$ for large shifts.
+*Conclusion:* When the attacker cannot achieve significant state change ($\text{ratio} \le 0.25$), detectors remain near the false alarm floor. As soon as the attacker shifts states by more than $25\%$ of target ($\text{ratio} > 0.25$), detection jumps above $60\%$, reaching $78-89\%$ for large shifts.
 
 ---
 
@@ -1292,11 +1290,12 @@ Evaluated on limited-meter attacks in the standard test split ($N = 153$):
 - **Permutation Null Check (20 seeds, test labels permuted):**
   - **Supervised RF Primary:** Mean ROC-AUC = **`0.5014`**, Std = **`0.0099`** (range: $[0.4835, 0.5191]$).
   - **Unsupervised Autoencoder (All):** Mean ROC-AUC = **`0.5018`**, Std = **`0.0139`** (range: $[0.4634, 0.5232]$).
-  - Both models strictly satisfy the null hypothesis criteria (mean within $0.50 \pm 0.02$, std $< 0.03$), demonstrating zero label leakage or split artifacting.
+  - Both models strictly satisfy the null hypothesis criteria (mean within $0.50 \pm 0.02$, std $< 0.03$).
 
 - **Generated Publication-Quality Figures (saved to `results/`):**
-  1. `results/roc_curves.png`: Comparative ROC curves on all attacks ($N = 2,000$) and exact AC stealth attacks ($N = 1,332$).
-  2. `results/detection_vs_sigma.png`: Detection rate at 5% FA vs attack shift magnitude in normal standard deviations (`shift_sigmas`).
-  3. `results/score_distributions.png`: Anomaly score probability density distributions for normal, exact AC, and other attacks across RF, Autoencoder, and Mahalanobis detectors.
-  4. `results/importance_bar_chart.png`: Grouped permutation importance ($\Delta \text{AUC}$) with error bars across all feature groups.
-  5. `results/limited_meter_shift_ratio.png`: Limited-meter detection rate vs achieved shift ratio.
+  1. [results/roc_curves.png](file:///c:/Projects/fdia-detection/results/roc_curves.png): Comparative ROC curves on all attacks ($N = 2,000$) and exact AC stealth attacks ($N = 1,332$).
+  2. [results/detection_vs_sigma.png](file:///c:/Projects/fdia-detection/results/detection_vs_sigma.png): Detection rate at 5% FA vs attack shift magnitude in normal standard deviations (`shift_sigmas`).
+  3. [results/score_distributions.png](file:///c:/Projects/fdia-detection/results/score_distributions.png): Anomaly score probability density distributions for normal, exact AC, and other attacks across RF, Autoencoder, and Mahalanobis detectors.
+  4. [results/importance_bar_chart.png](file:///c:/Projects/fdia-detection/results/importance_bar_chart.png): Grouped permutation importance ($\Delta \text{AUC}$) with error bars across all feature groups.
+  5. [results/limited_meter_shift_ratio.png](file:///c:/Projects/fdia-detection/results/limited_meter_shift_ratio.png): Limited-meter detection rate vs achieved shift ratio.
+
