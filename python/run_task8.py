@@ -602,12 +602,13 @@ def main():
         print(f"{r['Method']:<25} | {fa_s:<20} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
 
     print("\n--- Table 2 Held-Out and Seen Attack Detection @ 5% FA ---")
-    hdr_pt2 = f"{'Method':<25} | {'HELD exact_sin':<14} | {'HELD exact_mul':<14} | {'HELD limited':<12} | {'lin_single':<10} | {'lin_multi':<10} | {'random':<10}"
+    hdr_pt2 = f"{'Method':<25} | {'HELD exact_sin (N=847)':<22} | {'HELD exact_mul (N=831)':<22} | {'HELD limited (N=833)':<22} | {'lin_single (N=175)':<18} | {'lin_multi (N=192)':<18} | {'random (N=148)':<14}"
     print(hdr_pt2)
     print("-" * len(hdr_pt2))
     for r in unseen_table_rows:
         pt = r["PerType5"]
-        print(f"{r['Method']:<25} | {pt['exact_ac_single_bus']:6.2f}%       | {pt['exact_ac_multi_bus']:6.2f}%       | {pt['limited_meter']:6.2f}%    | {pt['linearised_single_bus']:6.2f}%  | {pt['linearised_multi_bus']:6.2f}%  | {pt['random']:6.2f}%")
+        print(f"{r['Method']:<25} | {pt['exact_ac_single_bus']:6.2f}%                 | {pt['exact_ac_multi_bus']:6.2f}%                 | {pt['limited_meter']:6.2f}%               | {pt['linearised_single_bus']:6.2f}%            | {pt['linearised_multi_bus']:6.2f}%            | {pt['random']:6.2f}%")
+
 
     # -------------------------------------------------------------------------
     # PART 4: EXTRA EXPERIMENTS

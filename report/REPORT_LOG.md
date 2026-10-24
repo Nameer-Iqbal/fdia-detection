@@ -1174,10 +1174,24 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
 
 ### 3. PART 3: Comprehensive Comparison Tables (Task 8b Corrected)
 
-#### Explanation of Previous Issues Resolved in Task 8b:
-1. **Range-Check Bug Resolution:** In the initial Task 8 run, `rc_th_5fa = np.percentile(rc_val_viol, 95.0)` evaluated to `0.0`. Testing `scores >= 0.0` was trivially true for 100% of samples (since non-negative). Fixed by requiring strict envelope breaches (`scores > 0.0` when `th == 0.0`), properly restoring the true Range-Check performance (realized test normal FA: **`0.10%`**, exact AC detection: **`4.22%`**).
-2. **Chi-Square ROC-AUC Discrepancy Clarification:** The figure `0.8147` in previous discussions was the Per-Hour Max-Z baseline AUC (`0.8152` [0.7986, 0.8318]), which was adjacent to Chi-Square. Chi-Square's true mathematical test ROC-AUC on objective $J$ across dataset v2 is **`0.6266` [0.6111, 0.6412]** (due to 33.2% exact stealth attacks where $\Delta J = 0.0$ and AUC is strictly `0.5004`).
-3. **Uniform Thresholding Rule:** All methods now use thresholds derived strictly from the $N = 1,000$ validation normal rows. Realized false alarm rates on the test normal rows ($N = 1,000$) are reported in the table.
+#### Explanation of Previous Issues Resolved and Superseded in Task 8b/8c:
+1. **Range-Check Bug Resolution:** In the initial Task 8 run, `rc_th_5fa = np.percentile(rc_val_viol, 95.0)` evaluated to `0.0`. Testing `scores >= 0.0` was trivially true for 100% of samples (since non-negative). Fixed by requiring strict envelope breaches (`scores > 0.0` when `th == 0.0`), properly restoring the true Range-Check performance (realized test normal FA: **`0.10%`**, exact AC detection: **`4.22%`**). The initial Task 8 `100.00%` detection rate is completely superseded.
+2. **Chi-Square ROC-AUC Discrepancy Clarification:** The figure `0.8147` in previous discussions was the Per-Hour Max-Z baseline AUC (`0.8152` [0.7986, 0.8318]), which was adjacent to Chi-Square. Chi-Square's true mathematical test ROC-AUC on objective $J$ across dataset v2 is **`0.6266` [0.6111, 0.6412]** (due to 33.2% exact stealth attacks where $\Delta J = 0.0$ and AUC is strictly `0.5004`). The `0.8147` figure is formally superseded.
+3. **Uniform Thresholding Rule (Validation Normal 5% and 1% Percentiles):**
+   - In initial Task 8, baseline thresholds were derived from *test* normal rows ($N = 1,000$).
+   - In Task 8b/8c, ALL models strictly derive thresholds from *validation* normal rows ($N = 1,000$), with realized test normal false alarms reported.
+   - Specific superseded Task 8 detection numbers:
+     - Chi-Square Det @ 5% FA: `26.20%` (Exact AC `4.52%`) -> superseded by **`24.30%`** (Exact AC **`3.61%`**).
+     - Calibrated LNR Det @ 5% FA: `25.90%` (Exact AC `6.33%`) -> superseded by **`28.20%`** (Exact AC **`8.13%`**).
+     - Per-Hour Max-Z Det @ 5% FA: `57.70%` (Exact AC `56.93%`) -> superseded by **`58.10%`** (Exact AC **`57.53%`**).
+     - Mahalanobis Det @ 5% FA: `76.90%` (Exact AC `81.33%`) -> superseded by **`78.40%`** (Exact AC **`82.83%`**).
+     - RF w/o D3 Det @ 5% FA: `82.50%` (Exact AC `87.95%`) -> superseded by **`83.50%`** (Exact AC **`86.75%`**).
+     - Autoencoder (D1+D2) Det @ 5% FA: **`85.30%`** (Exact AC **`90.96%`**) was already derived from validation normals and remains unchanged.
+4. **Table 2 Scheme & Row Counts:**
+   - Table 2 is strictly the **UNSEEN-ATTACK-TYPE scheme (`split_unseen`)**, $N = 4,026$ test rows (1,000 normal, 3,026 attacked). RF was trained solely on random and linearised attacks ($N = 4,463$) and tested on held-out exact AC ($N = 1,678$) and limited-meter ($N = 833$). Any conversational reference to "Out-of-Distribution Loads" or $N = 5,000$ in intermediate chat was a misnomer; the committed table and code never used that split.
+5. **Feature Group Dimensions:**
+   - The true engineered feature matrix dimensions are: Group A = 328, Group B = 163, Group C = 163, Group D1 = 228, Group D2 = 228, Group D3 = 228 (Total = 1,110 without D3; 1,338 with D3). Intermediate chat references to (175, 13, 26, 34, 32, 33) were an uncommitted transcript artifact and are completely superseded.
+
 
 #### Table 1: Standard Test Split Benchmark ($N = 2,000$ rows: 1,000 Normal, 1,000 Attacked)
 Evaluated with 1,000 group-bootstrap 95% confidence intervals:
