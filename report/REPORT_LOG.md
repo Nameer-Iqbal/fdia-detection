@@ -1174,26 +1174,12 @@ Evaluated at the 5% normal false alarm operating threshold (`7.1039`) with 1,000
 
 ### 3. PART 3: Comprehensive Comparison Tables (Task 8b Corrected)
 
-#### Explanation of Previous Issues Resolved and Superseded in Task 8b/8c:
-1. **Range-Check Bug Resolution:** In the initial Task 8 run, `rc_th_5fa = np.percentile(rc_val_viol, 95.0)` evaluated to `0.0`. Testing `scores >= 0.0` was trivially true for 100% of samples (since non-negative). Fixed by requiring strict envelope breaches (`scores > 0.0` when `th == 0.0`), properly restoring the true Range-Check performance (realized test normal FA: **`0.10%`**, exact AC detection: **`4.22%`**). The initial Task 8 `100.00%` detection rate is completely superseded.
-2. **Chi-Square ROC-AUC Discrepancy Clarification:** The figure `0.8147` in previous discussions was the Per-Hour Max-Z baseline AUC (`0.8152` [0.7986, 0.8318]), which was adjacent to Chi-Square. Chi-Square's true mathematical test ROC-AUC on objective $J$ across dataset v2 is **`0.6266` [0.6111, 0.6412]** (due to 33.2% exact stealth attacks where $\Delta J = 0.0$ and AUC is strictly `0.5004`). The `0.8147` figure is formally superseded.
-3. **Uniform Thresholding Rule (Validation Normal 5% and 1% Percentiles):**
-   - In initial Task 8, baseline thresholds were derived from *test* normal rows ($N = 1,000$).
-   - In Task 8b/8c, ALL models strictly derive thresholds from *validation* normal rows ($N = 1,000$), with realized test normal false alarms reported.
-   - Specific superseded Task 8 detection numbers:
-     - Chi-Square Det @ 5% FA: `26.20%` (Exact AC `4.52%`) -> superseded by **`24.30%`** (Exact AC **`3.61%`**).
-     - Calibrated LNR Det @ 5% FA: `25.90%` (Exact AC `6.33%`) -> superseded by **`28.20%`** (Exact AC **`8.13%`**).
-     - Per-Hour Max-Z Det @ 5% FA: `57.70%` (Exact AC `56.93%`) -> superseded by **`58.10%`** (Exact AC **`57.53%`**).
-     - Mahalanobis Det @ 5% FA: `76.90%` (Exact AC `81.33%`) -> superseded by **`78.40%`** (Exact AC **`82.83%`**).
-     - RF w/o D3 Det @ 5% FA: `82.50%` (Exact AC `87.95%`) -> superseded by **`83.50%`** (Exact AC **`86.75%`**).
-     - Autoencoder (D1+D2) Det @ 5% FA: **`85.30%`** (Exact AC **`90.96%`**) was already derived from validation normals and remains unchanged.
-4. **Table 2 Scheme & Row Counts:**
-   - Table 2 is strictly the **UNSEEN-ATTACK-TYPE scheme (`split_unseen`)**, $N = 4,026$ test rows (1,000 normal, 3,026 attacked). RF was trained solely on random and linearised attacks ($N = 4,463$) and tested on held-out exact AC ($N = 1,678$) and limited-meter ($N = 833$). Any conversational reference to "Out-of-Distribution Loads" or $N = 5,000$ in intermediate chat was a misnomer; the committed table and code never used that split.
-5. **Feature Group Dimensions:**
-   - The true engineered feature matrix dimensions are: Group A = 328, Group B = 163, Group C = 163, Group D1 = 228, Group D2 = 228, Group D3 = 228 (Total = 1,110 without D3; 1,338 with D3). Intermediate chat references to (175, 13, 26, 34, 32, 33) were an uncommitted transcript artifact and are completely superseded.
+#### Reference to Single Source of Truth:
+> [!IMPORTANT]
+> **Single Source of Truth:** All official benchmarking tables, operating thresholds, realized false alarm rates, and group-bootstrap confidence intervals for Task 8, 8b, and 8c are maintained in [results/final_tables.md](file:///c:/Projects/fdia-detection/results/final_tables.md), generated directly from the reproducible execution of `python/run_task8.py` (complete console output in `results/task8_final_output.txt`). All earlier conversational tables and intermediate numbers in this log are historical.
 
 
-#### Table 1: Standard Test Split Benchmark ($N = 2,000$ rows: 1,000 Normal, 1,000 Attacked)
+#### Table 1: Standard Test Split Benchmark [Historical - See results/final_tables.md]
 Evaluated with 1,000 group-bootstrap 95% confidence intervals:
 
 | Method | Realized Normal FA (5% / 1% th) | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
@@ -1223,7 +1209,7 @@ Evaluated with 1,000 group-bootstrap 95% confidence intervals:
 
 ---
 
-#### Table 2: Unseen-Attack Scheme Benchmark ($N = 4,026$ rows: 1,000 Normal, 3,026 Attacked)
+#### Table 2: Unseen-Attack Scheme Benchmark [Historical - See results/final_tables.md]
 RF was trained strictly on `split_unseen == 'train'` ($N = 4,463$, containing random and linearised attacks only). The exact AC and limited-meter attacks were completely held out and never seen during training.
 
 | Method | Realized Normal FA (5% / 1% th) | Overall ROC-AUC [95% CI] | Exact AC AUC [95% CI] | Overall Det @ 5% FA [95% CI] | Overall Det @ 1% FA [95% CI] | Exact AC Det @ 5% FA [95% CI] | Effective Attacks Det @ 5% FA [95% CI] |
@@ -1266,8 +1252,9 @@ RF was trained strictly on `split_unseen == 'train'` ($N = 4,463$, containing ra
 - **Mahalanobis maintains $41.85\%$**, capturing inter-bus covariance constraints.
 - **RF and Autoencoder maintain $57-61\%$ detection** on sub-sigma attacks by modeling non-linear physical cross-correlations.
 
-#### (2) Feature Group Ablation (Task 8b Re-Run with Identical Tuned RF Hyperparameters)
+#### (2) Feature Group Ablation [Historical - See results/final_tables.md]
 Trained with identical hyperparameters as the primary model (`n_estimators = 300, max_depth = 12, min_samples_leaf = 1`):
+
 | Ablation Setting | Feats | Validation AUC | Test ROC-AUC | Realized Normal FA | Overall Det @ 5% FA | Exact AC Det @ 5% FA |
 |---|---|---|---|---|---|---|
 | **Group A alone (Residuals)** | 328 | 0.6323 | 0.6360 | 4.50% | 28.30% | 5.72% |

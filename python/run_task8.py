@@ -621,6 +621,7 @@ def main():
     print("\n--- (1) Detection vs Shift Sigmas Bins (@ 5% Validation-Derived FA) ---")
     sig_bins = cfg["evaluation"]["sigma_bins"]
     sig_labels = cfg["evaluation"]["sigma_labels"]
+    test_meta = test_meta.copy()
     test_meta["sig_bin"] = pd.cut(test_meta["shift_sigmas"], bins=sig_bins, labels=sig_labels)
 
     sig_det_results = {"RF_Primary": [], "AE_All": [], "Mahalanobis": [], "Max_Z": [], "Counts": []}
