@@ -1,0 +1,16 @@
+================================================================================
+CROSS-CHECK VERIFICATION REPORT: final_tables.md vs task8_final_output.txt
+================================================================================
+Total values compared: 364
+Total mismatches:      0
+
+[Thresholds] 36 checked | 36 matched | 0 mismatched
+[Table 1 Summary] 63 checked | 63 matched | 0 mismatched
+[Table 1 Per-Type] 54 checked | 54 matched | 0 mismatched
+[Table 2 Summary] 49 checked | 49 matched | 0 mismatched
+[Table 2 Per-Type] 42 checked | 42 matched | 0 mismatched
+[Sigma Bins] 30 checked | 30 matched | 0 mismatched
+[Ablation] 66 checked | 66 matched | 0 mismatched
+[Limited-Meter Ratio] 24 checked | 24 matched | 0 mismatched
+
+VERIFICATION RESULT: ALL VALUES MATCH PERFECTLY (0 MISMATCHES).

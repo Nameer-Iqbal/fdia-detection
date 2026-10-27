@@ -10,7 +10,7 @@
 
 | Feature Group | Key / Column Prefix | Feature Count | Physical Interpretation |
 |---|---|---|---|
-| **Group A: Residuals** | `group_a_residuals` (`feat_res_r_*`) | **328** | Measurement raw ($z - h(\hat{x})$) and normalized ($r / \sigma$) residuals across 164 measurements |
+| **Group A: Residuals** | `group_a_residuals` (`feat_res_r_*`) | **328** | 163 raw ($z - h(\hat{x})$) and 163 normalized ($r / \sigma$) residuals across 163 measurements, plus objective $J$ and max normalized residual |
 | **Group B: Consistency** | `group_b_consistency` (`feat_cons_*`) | **163** | Active/reactive KCL nodal balance mismatches, Ohm's law branch flow checks |
 | **Group C: Sensitivity** | `group_c_sensitivity` (`feat_sens_*`) | **163** | Projection matrix diagonals, leverage scores, and gain matrix diagonal profiles |
 | **Group D1: Raw States/Meas** | `group_d1_raw` (`feat_nonres_z_*`, `feat_nonres_x_hat_*`) | **228** | 65 state estimates (32 angles, 33 voltages) and 163 raw measurements |
