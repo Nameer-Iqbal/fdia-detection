@@ -4,6 +4,9 @@
 # ==============================================================================
 
 [general]
+# Meter noise std devs are read from the [noise] section of this normal-data config
+# (single source of truth shared with julia/03_normal_data.jl).
+noise_config = "configs/dataset.toml"
 seed = 42
 voltage_limit_min = 0.90    # ANSI C84.1 physical feasibility bounds
 voltage_limit_max = 1.05

@@ -17,6 +17,7 @@ using DataFrames
 using CSV
 using LinearAlgebra
 using Printf
+import TOML
 
 include("04_attacks.jl")
 using .FDIAttacks
@@ -26,10 +27,25 @@ function main()
     println("Task 7: Generating Sensitivity Features (Per-Row Exact H, Leverage & Omega Diag)")
     println("================================================================================")
 
-    data_rel = length(ARGS) >= 1 ? ARGS[1] : joinpath("data", "attacks_full.csv")
-    out_rel = length(ARGS) >= 2 ? ARGS[2] : joinpath("data", "sensitivity_features.csv")
-    data_path = isabspath(data_rel) ? data_rel : normpath(joinpath(@__DIR__, "..", data_rel))
-    out_path = isabspath(out_rel) ? out_rel : normpath(joinpath(@__DIR__, "..", out_rel))
+    # Usage (preferred):  julia --project=julia julia/07_sensitivity_features.jl configs/features_v2.toml
+    #   reads [general] dataset_path, sensitivity_output_path and noise_config from the features config.
+    # Legacy usage:        julia ... 07_sensitivity_features.jl <attacks.csv> <out.csv> [noise_config.toml]
+    root = normpath(joinpath(@__DIR__, ".."))
+    resolve(p) = isabspath(p) ? p : normpath(joinpath(root, p))
+    if length(ARGS) >= 1 && endswith(ARGS[1], ".toml")
+        fcfg = TOML.parsefile(resolve(ARGS[1]))["general"]
+        data_rel = fcfg["dataset_path"]
+        out_rel = fcfg["sensitivity_output_path"]
+        noise_rel = fcfg["noise_config"]
+    else
+        data_rel = length(ARGS) >= 1 ? ARGS[1] : joinpath("data", "attacks_full.csv")
+        out_rel = length(ARGS) >= 2 ? ARGS[2] : joinpath("data", "sensitivity_features.csv")
+        noise_rel = length(ARGS) >= 3 ? ARGS[3] : joinpath("configs", "dataset_v2.toml")
+    end
+    data_path = resolve(data_rel)
+    out_path = resolve(out_rel)
+    noise = read_noise_config(resolve(noise_rel))
+    println("Measurement noise config: ", resolve(noise_rel))
     if !isfile(data_path)
         error("Dataset file not found: $data_path")
     end
@@ -49,7 +65,7 @@ function main()
 
     num_buses = system.bus.number
     monitoring = measurement(system)
-    v_sigma = 0.005; p_inj_sigma = 0.010; q_inj_sigma = 0.010; p_flow_sigma = 0.008; q_flow_sigma = 0.008
+    v_sigma = noise.v; p_inj_sigma = noise.p_inj; q_inj_sigma = noise.q_inj; p_flow_sigma = noise.p_flow; q_flow_sigma = noise.q_flow
     for i = 1:num_buses
         addVoltmeter!(monitoring; bus = i, magnitude = pf.voltage.magnitude[i], variance = v_sigma^2)
         addWattmeter!(monitoring; bus = i, active = pf.power.injection.active[i], variance = p_inj_sigma^2)

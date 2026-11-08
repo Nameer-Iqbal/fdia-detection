@@ -31,12 +31,49 @@ export eval_ac_measurement,
        check_voltage_range,
        state_to_full_polar,
        full_polar_to_state,
+       read_noise_config,
+       leverage_and_omega,
        V_NORMAL_MIN,
        V_NORMAL_MAX
 
 # Normal operating voltage envelope from N=5000 normal dataset
 const V_NORMAL_MIN = 0.9008926
 const V_NORMAL_MAX = 1.0032777
+
+"""
+    read_noise_config(config_path)
+
+Reads the measurement noise standard deviations (per-unit) from the `[noise]`
+section of a TOML config, so every script uses the same values as the normal
+dataset generator instead of hard-coding them.
+Returns a NamedTuple (v, p_inj, q_inj, p_flow, q_flow).
+"""
+function read_noise_config(config_path::AbstractString)
+    noise = TOML.parsefile(config_path)["noise"]
+    return (
+        v = Float64(noise["voltmeter_std"]),
+        p_inj = Float64(noise["power_injection_active_std"]),
+        q_inj = Float64(noise["power_injection_reactive_std"]),
+        p_flow = Float64(noise["power_flow_active_std"]),
+        q_flow = Float64(noise["power_flow_reactive_std"]),
+    )
+end
+
+"""
+    leverage_and_omega(se, x_hat, W_diag)
+
+Per-measurement leverage (hat-matrix diagonal K_ii) and residual-covariance
+diagonal Omega_ii, both evaluated at the estimated state x_hat:
+  G = H' W H,  K_ii = W_ii * (H G^-1 H')_ii,  Omega_ii = sigma_i^2 - (H G^-1 H')_ii
+"""
+function leverage_and_omega(se::AcStateEstimation, x_hat::AbstractVector{Float64}, W_diag::AbstractVector{Float64})
+    V_hat, th_hat = state_to_full_polar(x_hat)
+    eval_ac_measurement(se, V_hat, th_hat)
+    H = Matrix(se.method.jacobian[:, 2:66])
+    G = transpose(H) * (W_diag .* H)
+    q = sum((H * inv(G)) .* H, dims = 2)[:]
+    return q .* W_diag, (1.0 ./ W_diag) .- q
+end
 
 """
     state_to_full_polar(x, num_buses=33, slack_idx=1)
