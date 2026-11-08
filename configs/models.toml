@@ -10,6 +10,8 @@ features_meta = "data/features_meta_v2.json"
 train_features = "data/features_train_v2.csv"
 val_features = "data/features_val_v2.csv"
 test_features = "data/features_test_v2.csv"
+# Distribution-aware (mimic) stealth attack sets evaluated with the same trained detectors
+mimic_config = "configs/mimic_attacks_v2.toml"
 
 [features]
 # Feature group toggles for primary supervised model
@@ -48,3 +50,6 @@ sigma_bins = [0.0, 1.0, 2.0, 3.0, 5.0, 10.0, 100.0]
 sigma_labels = ["<1.0 sigma", "1.0-2.0 sig", "2.0-3.0 sig", "3.0-5.0 sig", "5.0-10.0 sig", ">10.0 sigmas"]
 shift_ratio_bins = [0.0, 0.25, 0.50, 0.75, 2.0]
 shift_ratio_labels = ["<=0.25", "0.25-0.50", "0.50-0.75", ">0.75"]
+# Bins for mimic-attack detection vs maximum voltage-magnitude shift (pu)
+mimic_shift_bins_pu = [0.0, 0.0025, 0.005, 0.01, 0.02, 1.0]
+mimic_shift_labels = ["<0.25%", "0.25-0.5%", "0.5-1%", "1-2%", ">2%"]

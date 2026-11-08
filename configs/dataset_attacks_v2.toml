@@ -4,6 +4,9 @@
 # ==============================================================================
 
 [general]
+# Meter noise std devs are read from the [noise] section of this normal-data config
+# (single source of truth shared with julia/03_normal_data.jl).
+noise_config = "configs/dataset_v2.toml"
 seed = 42
 base_dataset_path = "data/normal_data_v2.csv"
 output_dataset_path = "data/attacks_full_v2.csv"

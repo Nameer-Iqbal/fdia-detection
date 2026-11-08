@@ -12,6 +12,14 @@ features_meta_output_path = "data/features_meta_v2.json"
 h_matrix_path = "data/H_example_v2.csv"
 case_path = "data/cases/case33bw.m"
 bdd_config_path = "configs/bdd_v2.toml"
+# Meter noise std devs: read from the [noise] section of the normal-data config (single source of truth)
+noise_config = "configs/dataset_v2.toml"
+# Output of julia/07_sensitivity_features.jl (leverage and Omega diagonals per row)
+sensitivity_output_path = "data/sensitivity_features_v2.csv"
+# Per-split feature matrices written by python/features.py ({split} = train / val / test)
+features_split_template = "data/features_{split}_v2.csv"
+# Distribution-aware (mimic) attack sets to featurise (see configs/mimic_attacks_v2.toml)
+mimic_config = "configs/mimic_attacks_v2.toml"
 
 [splits]
 # Group-aware split ratios (by group_id, 5000 total groups)
@@ -30,13 +38,6 @@ held_out_attack_types = [
     "exact_ac_multi_bus",
     "limited_meter"
 ]
-
-[noise]
-voltmeter_std = 0.005
-power_injection_active_std = 0.010
-power_injection_reactive_std = 0.010
-power_flow_active_std = 0.008
-power_flow_reactive_std = 0.008
 
 [features]
 save_format = "csv"

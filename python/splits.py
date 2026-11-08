@@ -5,9 +5,10 @@ Task 7, Part 1: Dataset Splitting Module.
 Implements:
  1. Standard Group-Aware Split: 60% Train, 20% Validation, 20% Test by group_id.
     Both rows of each group (normal and attacked) remain strictly together.
- 2. Unseen Attack Scheme: Normal rows follow the group-aware split.
+ 2. Unseen Attack Scheme: every row keeps its group's split (twins never straddle splits).
     Attacked rows with held-out attack types (exact_ac_single_bus, exact_ac_multi_bus, limited_meter)
-    are excluded from training and assigned to the test evaluation split.
+    are evaluated only when they belong to a TEST group; those in train/val groups are marked
+    "unused" and dropped, so they are never trained on and never leak a twin into the test set.
  3. Exports split assignments to data/splits.csv (row_id, group_id, split, split_unseen).
 """
 
@@ -64,24 +65,21 @@ def create_splits(df, cfg):
     splits_standard = [group_to_split[g] for g in df["group_id"]]
 
     # 2. Unseen Attack Scheme
-    # Normal rows follow the group-aware split.
-    # Attacked rows:
-    # - If attack type is in train_attack_types: follow group-aware split.
-    # - If attack type is in held_out_attack_types: cannot be in train; assigned to test.
+    # Every row keeps its group's split, so a normal row and its attacked twin
+    # (same operating point, same measurement noise) can never sit on opposite
+    # sides of the train/test boundary.
+    # Attacked rows of a held-out type:
+    # - in a TEST group  -> "test" (evaluated as an unseen attack)
+    # - in a train/val group -> "unused" (dropped). Moving them into the test set
+    #   (the previous behaviour) left ~80% of held-out test attacks with their
+    #   normal twin inside the training set, i.e. group leakage.
     splits_unseen = []
     for _, row in df.iterrows():
         g_split = group_to_split[row["group_id"]]
-        if row["label"] == 0:
-            # Normal row follows group-aware split
-            splits_unseen.append(g_split)
+        if row["label"] == 1 and row["attack_type"] in held_out_types and g_split != "test":
+            splits_unseen.append("unused")
         else:
-            atype = row["attack_type"]
-            if atype in held_out_types:
-                # Held out of training entirely -> goes to test
-                splits_unseen.append("test")
-            else:
-                # Allowed in training -> follows group split
-                splits_unseen.append(g_split)
+            splits_unseen.append(g_split)
 
     df_splits = pd.DataFrame({
         "row_id": df["row_id"],

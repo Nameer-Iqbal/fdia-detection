@@ -1,16 +1,33 @@
 ================================================================================
-CROSS-CHECK VERIFICATION REPORT: final_tables.md vs task8_final_output.txt
+CROSS-CHECK VERIFICATION REPORT: final_tables.md vs raw run logs
 ================================================================================
-Total values compared: 364
-Total mismatches:      0
 
-[Thresholds] 36 checked | 36 matched | 0 mismatched
-[Table 1 Summary] 63 checked | 63 matched | 0 mismatched
-[Table 1 Per-Type] 54 checked | 54 matched | 0 mismatched
-[Table 2 Summary] 49 checked | 49 matched | 0 mismatched
-[Table 2 Per-Type] 42 checked | 42 matched | 0 mismatched
-[Sigma Bins] 30 checked | 30 matched | 0 mismatched
-[Ablation] 66 checked | 66 matched | 0 mismatched
-[Limited-Meter Ratio] 24 checked | 24 matched | 0 mismatched
+Source: results/task8_final_output.txt  (14 tables)
+  [OK ] Validation Normal Thresholds and Realized Normal Test False Alarm Rates: 9 rows, 77 values, 0 mismatched cells
+  [OK ] TABLE 1: STANDARD TEST SPLIT COMPARISON (N=2,000, VALIDATION THRESHOLDS): 9 rows, 185 values, 0 mismatched cells
+  [OK ] Table 1 Per Attack Type Detection @ 5% FA: 9 rows, 59 values, 0 mismatched cells
+  [OK ] Table 1 Classification Metrics (Standard Test Split): 9 rows, 95 values, 0 mismatched cells
+  [OK ] TABLE 2: UNSEEN-ATTACK SPLIT COMPARISON (N=2,000, VALIDATION THRESHOLDS): 7 rows, 143 values, 0 mismatched cells
+  [OK ] Table 2 Held-Out and Seen Attack Detection @ 5% FA: 7 rows, 45 values, 0 mismatched cells
+  [OK ] Table 2 Classification Metrics (Unseen-Attack Split): 7 rows, 73 values, 0 mismatched cells
+  [OK ] (1) Detection vs Shift Sigmas Bins (@ 5% Validation-Derived FA): 6 rows, 40 values, 0 mismatched cells
+  [OK ] (2) Feature Group Ablations (Identical Tuned Hyperparams: 300 trees, depth 12, min leaf 1): 11 rows, 73 values, 0 mismatched cells
+  [OK ] (3) Limited-Meter: Detection vs Shift Ratio (@ 5% FA): 4 rows, 30 values, 0 mismatched cells
+  [OK ] (4) State-Proxy Diagnostics: What Groups B and C Encode: 4 rows, 24 values, 0 mismatched cells
+  [OK ] (5) MIMIC ATTACK BENCHMARK: val_donors (N=2,000, VALIDATION THRESHOLDS): 9 rows, 140 values, 0 mismatched cells
+  [OK ] (5) MIMIC ATTACK BENCHMARK: train_donors (N=2,000, VALIDATION THRESHOLDS): 9 rows, 140 values, 0 mismatched cells
+  [OK ] (6) Mimic Attacks (val_donors): Detection vs Max Voltage Shift (@ 5% FA): 5 rows, 38 values, 0 mismatched cells
+  [OK ] RF Primary Permutation Null Check: quoted verbatim
+  [OK ] AE All Permutation Null Check: quoted verbatim
 
-VERIFICATION RESULT: ALL VALUES MATCH PERFECTLY (0 MISMATCHES).
+Source: results/lownoise/task8_output.txt  (14 tables)
+  [OK ] Low-Noise Sensitivity: Validation Normal Thresholds and Realized Normal Test False Alarm Rates: 9 rows, 77 values, 0 mismatched cells
+  [OK ] Low-Noise Sensitivity: TABLE 1: STANDARD TEST SPLIT COMPARISON (N=2,000, VALIDATION THRESHOLDS): 9 rows, 185 values, 0 mismatched cells
+  [OK ] Low-Noise Sensitivity: Table 1 Per Attack Type Detection @ 5% FA: 9 rows, 59 values, 0 mismatched cells
+  [OK ] Low-Noise Sensitivity: Table 1 Classification Metrics (Standard Test Split): 9 rows, 95 values, 0 mismatched cells
+  [OK ] Low-Noise Sensitivity: (5) MIMIC ATTACK BENCHMARK: val_donors (N=2,000, VALIDATION THRESHOLDS): 9 rows, 140 values, 0 mismatched cells
+
+Total numeric values compared: 1726
+Problems found: 0
+
+VERIFICATION RESULT: ALL TABLES MATCH (0 PROBLEMS).

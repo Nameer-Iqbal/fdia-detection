@@ -138,11 +138,16 @@ function main()
     slack_idx = system.bus.layout.slack
     monitoring = measurement(system)
 
-    v_sigma = 0.005
-    p_inj_sigma = 0.010
-    q_inj_sigma = 0.010
-    p_flow_sigma = 0.008
-    q_flow_sigma = 0.008
+    # Measurement noise std devs (pu) come from the [noise] section of the
+    # normal-data config named by `noise_config`, so they always match the base dataset.
+    noise_cfg_path = normpath(joinpath(@__DIR__, "..", cfg["general"]["noise_config"]))
+    noise = read_noise_config(noise_cfg_path)
+    println("Measurement noise config:       ", noise_cfg_path)
+    v_sigma = noise.v
+    p_inj_sigma = noise.p_inj
+    q_inj_sigma = noise.q_inj
+    p_flow_sigma = noise.p_flow
+    q_flow_sigma = noise.q_flow
 
     for i = 1:num_buses
         addVoltmeter!(monitoring; bus = i, magnitude = pf.voltage.magnitude[i], variance = v_sigma^2)

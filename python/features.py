@@ -890,7 +890,8 @@ def main():
     dataset_path = cfg["general"]["dataset_path"]
     splits_path = cfg["general"]["splits_output_path"]
     case_path = cfg["general"]["case_path"]
-    sens_path = "data/sensitivity_features_v2.csv" if "v2" in config_path else "data/sensitivity_features.csv"
+    default_sens = "data/sensitivity_features_v2.csv" if "v2" in config_path else "data/sensitivity_features.csv"
+    sens_path = cfg["general"].get("sensitivity_output_path", default_sens)
 
     print("="*80)
     print("TASK 7: COMPLETE FEATURE EXTRACTION & VALIDATION PIPELINE")
@@ -951,9 +952,10 @@ def main():
     df_with_meta["split_unseen"] = df_splits["split_unseen"].values
 
     suffix = "_v2" if "v2" in config_path else ""
+    split_template = cfg["general"].get("features_split_template", "data/features_{split}" + suffix + ".csv")
     for s in ["train", "val", "test"]:
         sub_df = df_with_meta[df_with_meta["split"] == s]
-        out_csv = f"data/features_{s}{suffix}.csv"
+        out_csv = split_template.format(split=s)
         print(f"Saving {s} split ({len(sub_df)} rows x {sub_df.shape[1]} cols) to {out_csv}...")
         sub_df.to_csv(out_csv, index=False)
         print(f"  Saved {out_csv} ({os.path.getsize(out_csv)/(1024*1024):.2f} MB).")
@@ -1022,10 +1024,67 @@ def main():
         json.dump(meta_info, f, indent=4)
     print(f"Saved feature metadata to: {meta_out_path}")
 
+    # 7. Distribution-aware (mimic) attack rows, featurised with the same baselines
+    print("\n" + "="*80)
+    print("FEATURISING DISTRIBUTION-AWARE (MIMIC) ATTACK SETS")
+    print("="*80)
+    featurise_mimic_sets(cfg, df_attacks, train_norm_mask.values, case_path)
+
     print("\n" + "="*80)
     print("TASK 7 FEATURE ENGINEERING PIPELINE COMPLETED SUCCESSFULLY!")
     print("="*80)
 
+
+
+# ==============================================================================
+# FEATURISING EXTERNAL ATTACK ROWS (distribution-aware "mimic" attacks)
+# ==============================================================================
+def featurise_external_rows(df_rows, df_sens_rows, df_attacks, train_norm_mask, case_path):
+    """
+    Builds Groups A, B, C, D1, D2, D3 for attack rows generated outside the main
+    dataset (julia/09_mimic_attacks.jl), using EXACTLY the same functions and the
+    same train-normal hourly baselines (D2) as the main dataset, so a detector
+    trained on the main feature matrices can score them directly.
+    """
+    df_rows = df_rows.reset_index(drop=True)
+    df_sens_rows = df_sens_rows.set_index("row_id").loc[df_rows["row_id"]].reset_index()
+    feat_a = compute_group_a_residuals(df_rows, df_sens_rows)
+    feat_b = compute_group_b_consistency(df_rows, case_path)
+    feat_c = compute_group_c_sensitivity(df_sens_rows)
+    feat_d1 = compute_group_d1_raw(df_rows)
+    # D2: hourly means fitted on the TRAIN normal rows of the main dataset only
+    train_norm = df_attacks[train_norm_mask]
+    stacked = pd.concat([train_norm, df_rows], ignore_index=True)
+    mask = np.r_[np.ones(len(train_norm), bool), np.zeros(len(df_rows), bool)]
+    feat_d2 = compute_group_d2_hourly_forecast(stacked, mask).iloc[len(train_norm):].reset_index(drop=True)
+    # D3: change from the previous hour's (clean) normal operating point
+    normals = df_attacks[df_attacks["label"] == 0]
+    stacked3 = pd.concat([normals, df_rows], ignore_index=True)
+    feat_d3 = compute_group_d3_change_prev(stacked3).iloc[len(normals):].reset_index(drop=True)
+    out = pd.concat([feat_a, feat_b, feat_c, feat_d1, feat_d2, feat_d3], axis=1)
+    assert_no_leakage(list(out.columns))
+    for col in ["row_id", "group_id", "label"]:
+        out[col] = df_rows[col].values
+    return out
+
+
+def featurise_mimic_sets(cfg, df_attacks, train_norm_mask, case_path):
+    """Featurises every mimic attack set listed in the config named by [general] mimic_config."""
+    mimic_cfg_path = cfg["general"].get("mimic_config")
+    if not mimic_cfg_path or not os.path.exists(mimic_cfg_path):
+        print("No mimic attack config found; skipping mimic featurisation.")
+        return
+    with open(mimic_cfg_path, "rb") as f:
+        mcfg = tomllib.load(f)
+    for mset in mcfg["sets"]:
+        if not os.path.exists(mset["attacks_path"]):
+            print(f"Mimic set '{mset['name']}': {mset['attacks_path']} not found (run julia/09_mimic_attacks.jl); skipping.")
+            continue
+        rows = pd.read_csv(mset["attacks_path"])
+        sens = pd.read_csv(mset["sens_path"])
+        feats = featurise_external_rows(rows, sens, df_attacks, train_norm_mask, case_path)
+        feats.to_csv(mset["features_path"], index=False)
+        print(f"Mimic set '{mset['name']}': saved {len(feats)} rows x {feats.shape[1]} cols to {mset['features_path']}")
 
 if __name__ == "__main__":
     main()
