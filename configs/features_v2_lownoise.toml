@@ -1,0 +1,46 @@
+# LOW-NOISE SENSITIVITY VARIANT (generated from the v2 config; only the noise and file paths differ)
+# Purpose: test whether conclusions depend on the deliberately conservative meter noise of the main study,
+# where the injection-meter std (0.010 pu = 100 kW) is comparable to a typical bus load (~0.012 pu).
+# ==============================================================================
+# Feature Engineering & Dataset Split Configuration (Dataset v2)
+# IEEE 33-Bus Radial Distribution System
+# ==============================================================================
+
+[general]
+seed = 42
+dataset_path = "data/attacks_full_v2_lownoise.csv"
+splits_output_path = "data/splits_v2_lownoise.csv"
+features_output_path = "data/features_v2_lownoise.csv"
+features_meta_output_path = "data/features_meta_v2_lownoise.json"
+h_matrix_path = "data/H_example_v2_lownoise.csv"
+case_path = "data/cases/case33bw.m"
+bdd_config_path = "configs/bdd_v2.toml"
+# Meter noise std devs: read from the [noise] section of the normal-data config (single source of truth)
+noise_config = "configs/dataset_v2_lownoise.toml"
+# Output of julia/07_sensitivity_features.jl (leverage and Omega diagonals per row)
+sensitivity_output_path = "data/sensitivity_features_v2_lownoise.csv"
+# Per-split feature matrices written by python/features.py ({split} = train / val / test)
+features_split_template = "data/features_{split}_v2_lownoise.csv"
+# Distribution-aware (mimic) attack sets to featurise (see configs/mimic_attacks_v2_lownoise.toml)
+mimic_config = "configs/mimic_attacks_v2_lownoise.toml"
+
+[splits]
+# Group-aware split ratios (by group_id, 5000 total groups)
+train_ratio = 0.60
+val_ratio = 0.20
+test_ratio = 0.20
+
+train_attack_types = [
+    "random",
+    "linearised_single_bus",
+    "linearised_multi_bus"
+]
+
+held_out_attack_types = [
+    "exact_ac_single_bus",
+    "exact_ac_multi_bus",
+    "limited_meter"
+]
+
+[features]
+save_format = "csv"

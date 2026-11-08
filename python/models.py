@@ -262,7 +262,9 @@ class AutoencoderDetector:
         score_i = mean((x_i - x_rec_i)^2)
         """
         self.model.eval()
-        X_scaled = self.scaler.transform(X)
+        # Contiguous float64 input makes the float32 scores independent of how the
+        # caller sliced the feature matrix (memory layout changes the last digits).
+        X_scaled = self.scaler.transform(np.ascontiguousarray(X, dtype=np.float64))
         with torch.no_grad():
             x_tensor = torch.tensor(X_scaled, dtype=torch.float32)
             rec = self.model(x_tensor)

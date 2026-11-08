@@ -1,0 +1,41 @@
+# LOW-NOISE SENSITIVITY VARIANT (generated from the v2 config; only the noise and file paths differ)
+# Purpose: test whether conclusions depend on the deliberately conservative meter noise of the main study,
+# where the injection-meter std (0.010 pu = 100 kW) is comparable to a typical bus load (~0.012 pu).
+# ==============================================================================
+# Distribution-Aware ("Mimic") Exact AC Stealth Attacks (Dataset v2)
+# ------------------------------------------------------------------------------
+# Threat model: the attacker has historical measurements (e.g. from a compromised
+# historian) and knows what normal operation looks like at each hour of the day.
+# For every TEST operating point, it picks a genuine normal operating point from a
+# DIFFERENT DAY at the SAME HOUR (the "donor") and injects the exact AC stealth
+# attack that moves the state estimate onto the donor's state:
+#     c = x_hat_donor - x_hat_self,   a = h(x_hat_self + c) - h(x_hat_self)
+# The falsified state is therefore both residual-consistent (invisible to BDD) and
+# statistically typical for that hour (invisible to state-prior detectors).
+# ==============================================================================
+
+[general]
+seed = 2026
+dataset_path = "data/attacks_full_v2_lownoise.csv"   # source of normal rows (z, x_hat) for targets and donors
+splits_path = "data/splits_v2_lownoise.csv"
+case_path = "data/cases/case33bw.m"
+noise_config = "configs/dataset_v2_lownoise.toml"
+target_split = "test"          # one mimic attack per normal operating point of this split
+min_donor_gap_hours = 24       # donor must come from a different day (|time_idx difference| >= 24)
+se_max_iter = 100
+
+# Primary set: donors drawn from VALIDATION normals, i.e. states no detector was trained on.
+[[sets]]
+name = "val_donors"
+donor_split = "val"
+attacks_path = "data/mimic_attacks_val_v2_lownoise.csv"
+sens_path = "data/mimic_sens_val_v2_lownoise.csv"
+features_path = "data/features_mimic_val_v2_lownoise.csv"
+
+# Secondary set: donors drawn from TRAINING normals (states the detectors saw labelled normal).
+[[sets]]
+name = "train_donors"
+donor_split = "train"
+attacks_path = "data/mimic_attacks_train_v2_lownoise.csv"
+sens_path = "data/mimic_sens_train_v2_lownoise.csv"
+features_path = "data/features_mimic_train_v2_lownoise.csv"

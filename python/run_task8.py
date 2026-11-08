@@ -60,12 +60,66 @@ def compute_flags(scores, threshold, is_range_check=False):
     return scores >= threshold
 
 
+class _Tee:
+    """Writes everything printed to the console and to a log file at the same time."""
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, text):
+        for st in self.streams:
+            st.write(text)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
+def classification_metrics(flags, y):
+    """Accuracy, precision, recall (= detection rate), F1 and false-alarm rate, all in %."""
+    flags = np.asarray(flags, bool); y = np.asarray(y)
+    tp = int(np.sum(flags & (y == 1))); fp = int(np.sum(flags & (y == 0)))
+    fn = int(np.sum(~flags & (y == 1))); tn = int(np.sum(~flags & (y == 0)))
+    prec = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
+    return {"acc": 100.0 * (tp + tn) / len(y), "prec": 100.0 * prec, "rec": 100.0 * rec,
+            "f1": 100.0 * f1, "fa": 100.0 * fp / max(fp + tn, 1)}
+
+
+def print_classification_table(title, methods_dict, y):
+    """
+    Prints the brief's classification metrics (accuracy, precision, recall, F1, false
+    alarm) for every method at its 5% and 1% validation-normal thresholds.
+    Note: accuracy and precision depend on the class balance of the evaluated set.
+    """
+    n_pos, n_neg = int(np.sum(y == 1)), int(np.sum(y == 0))
+    print(f"\n--- {title} ---")
+    print(f"(normal N={n_neg}, attacked N={n_pos}; thresholds = 95th / 99th percentile of validation normal scores)")
+    hdr = (f"{'Method':<26} | {'Acc @5%':<8} | {'Prec @5%':<8} | {'Recall @5%':<10} | {'F1 @5%':<8} | {'FA @5%':<8} | "
+           f"{'Acc @1%':<8} | {'Prec @1%':<8} | {'Recall @1%':<10} | {'F1 @1%':<8} | {'FA @1%':<8}")
+    print(hdr)
+    print("-" * len(hdr))
+    for m_name, (scores, th5, th1, is_rc) in methods_dict.items():
+        a = classification_metrics(compute_flags(scores, th5, is_rc), y)
+        b = classification_metrics(compute_flags(scores, th1, is_rc), y)
+        print(f"{m_name:<26} | {a['acc']:6.2f}%  | {a['prec']:6.2f}%  | {a['rec']:6.2f}%    | {a['f1']:6.2f}%  | {a['fa']:6.2f}%  | "
+              f"{b['acc']:6.2f}%  | {b['prec']:6.2f}%  | {b['rec']:6.2f}%    | {b['f1']:6.2f}%  | {b['fa']:6.2f}%")
+
+
 def main():
     print("=" * 80)
     print("TASK 8b: BENCHMARKING WITH UNIFORM VALIDATION THRESHOLDING & BUG FIXES")
     print("=" * 80)
 
-    cfg = load_config()
+    # Usage: python python/run_task8.py [config.toml] [log.txt]
+    # With a log path, everything printed is also written (UTF-8) to that file,
+    # which is what python/make_final_tables.py and python/check_tables.py read.
+    if len(sys.argv) > 2:
+        os.makedirs(os.path.dirname(sys.argv[2]) or ".", exist_ok=True)
+        sys.stdout = _Tee(sys.__stdout__, open(sys.argv[2], "w", encoding="utf-8", buffering=1))
+    cfg_path = sys.argv[1] if len(sys.argv) > 1 else "configs/models.toml"
+    cfg = load_config(cfg_path)
+    print(f"Config: {cfg_path}")
     seed = cfg["general"]["seed"]
     np.random.seed(seed)
     os.makedirs(cfg["general"]["results_dir"], exist_ok=True)
@@ -382,14 +436,16 @@ def main():
         f1 = compute_flags(scores, th1, is_rc)
         r_fa5 = np.mean(f5[norm_mask_test]) * 100.0
         r_fa1 = np.mean(f1[norm_mask_test]) * 100.0
-        print(f"{m_name:<25} | {th5:14.6f} | {th1:14.6f} | {r_fa5:6.2f}% ({np.sum(f5[norm_mask_test]):3d}/1000)   | {r_fa1:6.2f}% ({np.sum(f1[norm_mask_test]):3d}/1000)")
+        n_nt = int(np.sum(norm_mask_test))
+        print(f"{m_name:<25} | {th5:14.6f} | {th1:14.6f} | {r_fa5:6.2f}% ({np.sum(f5[norm_mask_test]):3d}/{n_nt})   | {r_fa1:6.2f}% ({np.sum(f1[norm_mask_test]):3d}/{n_nt})")
 
-    # Explanation of Chi-Square AUC discrepancy
-    print("\n--- Chi-Square ROC-AUC Discrepancy Clarification ---")
-    print("  True Objective_J ROC-AUC on dataset v2 test split: 0.6266 [0.6111, 0.6412]")
-    print("  Explanation: In eval_v2.py line 18, Per-Hour Max-Z has Overall AUC 0.8152 (bootstrap range [0.7986, 0.8318]).")
-    print("  The number 0.8147 in earlier summaries was Per-Hour Max-Z, not Chi-Square.")
-    print("  Chi-Square objective_J has an AUC of 0.5004 on exact AC attacks (pure random guessing) and 0.6266 overall.")
+    # Chi-Square vs Per-Hour Max-Z AUC (computed, not hard-coded): earlier summaries
+    # confused the two, so both are printed side by side.
+    exact_sub_tmp = exact_mask_test | norm_mask_test
+    print("\n--- Chi-Square ROC-AUC Clarification ---")
+    print(f"  Chi-Square (objective J) ROC-AUC: overall {roc_auc_score(y_test, chi_test_scores):.4f}, "
+          f"exact AC {roc_auc_score(y_test[exact_sub_tmp], chi_test_scores[exact_sub_tmp]):.4f}")
+    print(f"  Per-Hour Max-Z ROC-AUC (a different detector): overall {roc_auc_score(y_test, max_abs_z_test):.4f}")
 
     # Evaluate table on standard test split
     attack_types = ["exact_ac_single_bus", "exact_ac_multi_bus", "limited_meter", "linearised_single_bus", "linearised_multi_bus", "random"]
@@ -444,7 +500,7 @@ def main():
         })
 
     # Print Table 1: Standard Test Split
-    print("\n--- TABLE 1: STANDARD TEST SPLIT COMPARISON (N=2,000, VALIDATION THRESHOLDS) ---")
+    print(f"\n--- TABLE 1: STANDARD TEST SPLIT COMPARISON (N={len(y_test):,}, VALIDATION THRESHOLDS) ---")
     hdr = f"{'Method':<25} | {'Realized Normal FA':<20} | {'Overall AUC [95% CI]':<25} | {'Exact AC AUC [95% CI]':<25} | {'Det @ 5% FA':<14} | {'Det @ 1% FA':<14} | {'Exact @ 5% FA':<14} | {'Eff @ 5% FA':<14}"
     print(hdr)
     print("-" * len(hdr))
@@ -466,6 +522,8 @@ def main():
     for r in std_table_rows:
         pt = r["PerType5"]
         print(f"{r['Method']:<25} | {pt['exact_ac_single_bus']:6.2f}%     | {pt['exact_ac_multi_bus']:6.2f}%     | {pt['limited_meter']:6.2f}%  | {pt['linearised_single_bus']:6.2f}%  | {pt['linearised_multi_bus']:6.2f}%  | {pt['random']:6.2f}%")
+
+    print_classification_table("Table 1 Classification Metrics (Standard Test Split)", methods, y_test)
 
     # -------------------------------------------------------------------------
     # UNSEEN-ATTACK SPLIT EVALUATION
@@ -588,7 +646,7 @@ def main():
             "PerType5": per_type_det5,
         })
 
-    print("\n--- TABLE 2: UNSEEN-ATTACK SPLIT COMPARISON (N=4,026, VALIDATION THRESHOLDS) ---")
+    print(f"\n--- TABLE 2: UNSEEN-ATTACK SPLIT COMPARISON (N={len(y_unseen_test):,}, VALIDATION THRESHOLDS) ---")
     print(hdr)
     print("-" * len(hdr))
     for r in unseen_table_rows:
@@ -602,13 +660,18 @@ def main():
         print(f"{r['Method']:<25} | {fa_s:<20} | {auc_s:<25} | {auc_e:<25} | {d5_s:<14} | {d1_s:<14} | {ex5_s:<14} | {eff5_s:<14}")
 
     print("\n--- Table 2 Held-Out and Seen Attack Detection @ 5% FA ---")
-    hdr_pt2 = f"{'Method':<25} | {'HELD exact_sin (N=847)':<22} | {'HELD exact_mul (N=831)':<22} | {'HELD limited (N=833)':<22} | {'lin_single (N=175)':<18} | {'lin_multi (N=192)':<18} | {'random (N=148)':<14}"
+    n_at = {at: int(np.sum((unseen_test_meta["attack_type"] == at).values)) for at in attack_types}
+    hdr_pt2 = (f"{'Method':<25} | {'HELD exact_sin (N=' + str(n_at['exact_ac_single_bus']) + ')':<22} | {'HELD exact_mul (N=' + str(n_at['exact_ac_multi_bus']) + ')':<22} | "
+               f"{'HELD limited (N=' + str(n_at['limited_meter']) + ')':<22} | {'lin_single (N=' + str(n_at['linearised_single_bus']) + ')':<18} | "
+               f"{'lin_multi (N=' + str(n_at['linearised_multi_bus']) + ')':<18} | {'random (N=' + str(n_at['random']) + ')':<14}")
     print(hdr_pt2)
     print("-" * len(hdr_pt2))
     for r in unseen_table_rows:
         pt = r["PerType5"]
         print(f"{r['Method']:<25} | {pt['exact_ac_single_bus']:6.2f}%                 | {pt['exact_ac_multi_bus']:6.2f}%                 | {pt['limited_meter']:6.2f}%               | {pt['linearised_single_bus']:6.2f}%            | {pt['linearised_multi_bus']:6.2f}%            | {pt['random']:6.2f}%")
 
+
+    print_classification_table("Table 2 Classification Metrics (Unseen-Attack Split)", unseen_methods, y_unseen_test)
 
     # -------------------------------------------------------------------------
     # PART 4: EXTRA EXPERIMENTS
@@ -747,6 +810,202 @@ def main():
         lm_ratio_results["Chi_Square"].append(det_chi)
         print(f"{rl:<18} | {cnt:<6} | {det_rf:6.2f}%     | {det_ae:6.2f}%     | {det_m:6.2f}%     | {det_lnr:6.2f}%         | {det_chi:6.2f}%")
 
+    # 4. What do Groups B and C actually encode? (state-proxy diagnostics)
+    # An exact AC stealth attack produces measurements that are perfectly consistent
+    # with the falsified state, so any feature that still separates it must be
+    # reacting to the falsified STATE being unusual, not to a physics violation.
+    # (a) R^2 of predicting each feature column from the state estimate alone
+    #     (quadratic ridge, fitted on train normals, scored on test normals).
+    # (b) RF trained on each sub-block alone (same tuned hyperparameters).
+    print("\n--- (4) State-Proxy Diagnostics: What Groups B and C Encode ---")
+    from sklearn.linear_model import Ridge
+    xhat_cols = [c for c in groups_dict["d1"] if c.startswith("feat_nonres_x_hat_")]
+    tr_norm_all = train_mask & (y_all == 0)
+    te_norm_all = test_mask & (y_all == 0)
+    X_state = df_all_feat[xhat_cols].values
+    X_state_q = np.hstack([X_state, X_state ** 2])
+
+    def r2_from_state(cols):
+        Y = df_all_feat[cols].values
+        keep = Y[tr_norm_all].std(axis=0) > 1e-12
+        reg = Ridge(alpha=1e-8).fit(X_state_q[tr_norm_all], Y[tr_norm_all][:, keep])
+        Yt = Y[te_norm_all][:, keep]
+        P = reg.predict(X_state_q[te_norm_all])
+        r2 = 1.0 - ((Yt - P) ** 2).sum(axis=0) / ((Yt - Yt.mean(axis=0)) ** 2).sum(axis=0)
+        return float(np.median(r2)), float(np.min(r2))
+
+    b_cols = groups_dict["b"]
+    proxy_blocks = [
+        ("B: KCL power-balance mismatch", [c for c in b_cols if "_mismatch_bus_" in c]),
+        ("B: voltage vs neighbour mean", [c for c in b_cols if "v_neighbor_dev" in c]),
+        ("B: measured vs recomputed flow", [c for c in b_cols if "_flow_br_" in c]),
+        ("C: measurement leverage", groups_dict["c"]),
+    ]
+    print(f"{'Feature Block':<32} | {'Feats':<5} | {'R2 med':<7} | {'R2 min':<7} | {'Test AUC':<8} | {'Exact AUC':<9} | {'Exact Det@5%':<12}")
+    print("-" * 100)
+    for blk_name, blk_cols in proxy_blocks:
+        r2_med, r2_min = r2_from_state(blk_cols)
+        rf_blk = RandomForestClassifier(
+            n_estimators=best_rf_params["n_estimators"],
+            max_depth=best_rf_params["max_depth"],
+            min_samples_leaf=best_rf_params["min_samples_leaf"],
+            random_state=seed,
+            n_jobs=-1,
+        )
+        rf_blk.fit(df_all_feat[blk_cols].values[train_mask], y_train)
+        p_val_b = rf_blk.predict_proba(df_all_feat[blk_cols].values[val_mask])[:, 1]
+        p_test_b = rf_blk.predict_proba(df_all_feat[blk_cols].values[test_mask])[:, 1]
+        th5_b = float(np.percentile(p_val_b[val_norm_mask], 95.0))
+        auc_b = roc_auc_score(y_test, p_test_b)
+        auc_b_ex = roc_auc_score(y_test[exact_sub_mask], p_test_b[exact_sub_mask])
+        det_b_ex = np.mean(compute_flags(p_test_b, th5_b)[exact_mask_test]) * 100.0
+        print(f"{blk_name:<32} | {len(blk_cols):<5} | {r2_med:.4f}  | {r2_min:.4f}  | {auc_b:.4f}   | {auc_b_ex:.4f}    | {det_b_ex:6.2f}%")
+    print("R2 ~ 1 means the block is (almost) a deterministic function of the state estimate;")
+    print("R2 ~ 0 means it is dominated by measurement noise.")
+
+    # -------------------------------------------------------------------------
+    # PART 4b: DISTRIBUTION-AWARE ("MIMIC") STEALTH ATTACKS
+    # -------------------------------------------------------------------------
+    # The SAME trained detectors and the SAME validation thresholds as Table 1 are
+    # applied to the test normal rows plus one mimic attack per test operating point
+    # (julia/09_mimic_attacks.jl). Each mimic attack is an exact AC stealth attack that
+    # moves the state estimate onto a genuine normal state from another day at the
+    # same hour, so it is residual-consistent AND typical for that hour.
+    print("\n" + "=" * 80)
+    print("PART 4b: DISTRIBUTION-AWARE (MIMIC) EXACT AC STEALTH ATTACKS")
+    print("=" * 80)
+
+    def score_all_methods(meta, feats):
+        """Scores arbitrary rows with every Table 1 detector (same models, same rules)."""
+        V = meta[v_cols].values
+        rc = np.maximum(0.0, np.maximum(v_min_norm - V, V - v_max_norm)).max(axis=1)
+        X = meta[x_cols].values.astype(float)
+        H = meta["hour_of_day"].values.astype(int)
+        mz = np.zeros(len(meta)); mh = np.zeros(len(meta))
+        for i in range(len(meta)):
+            mu, sd = hourly_stats[H[i]]
+            mz[i] = np.max(np.abs((X[i] - mu) / sd))
+            lw = hourly_lw[H[i]]
+            d = X[i:i + 1] - lw.location_
+            mh[i] = np.sqrt((d @ lw.precision_ @ d.T)[0, 0])
+        return {
+            "Chi-Square": meta["objective_J"].values,
+            "Calibrated LNR": meta["max_norm_residual"].values,
+            "Range-Check (Envelope)": rc,
+            "Per-Hour Max-Z": mz,
+            "Mahalanobis (Ledoit-Wolf)": mh,
+            "Autoencoder (D1+D2)": best_ae_d12.score_samples(feats[cols_d12].values),
+            "Autoencoder (All: A-D2)": best_ae_prim.score_samples(feats[cols_primary].values),
+            "RF w/o D3 (Primary)": best_rf_prim.predict_proba(feats[cols_primary].values)[:, 1],
+            "RF with D3 (Clean Prev)": rf_d3.predict_proba(feats[cols_all_with_d3].values)[:, 1],
+        }
+
+    # Self-check: re-scoring the standard test rows must reproduce the Table 1 scores exactly.
+    test_rescored = score_all_methods(test_meta, df_all_feat[test_mask].reset_index(drop=True))
+    # (tolerance 1e-6 relative: the autoencoders compute in float32)
+    max_rel = 0.0
+    for m_name, (scores, _, _, _) in methods.items():
+        rel = np.max(np.abs(test_rescored[m_name] - scores) / np.maximum(np.abs(scores), 1e-12))
+        max_rel = max(max_rel, float(rel))
+        assert rel < 1e-6, f"re-scoring mismatch for {m_name}: max relative difference {rel:.2e}"
+    print(f"Self-check: re-scoring the standard test rows reproduces every Table 1 score (max relative difference {max_rel:.1e}): PASSED")
+
+    exact5_table1 = {r["Method"]: r["Det5_Exact"][0] for r in std_table_rows}
+    mimic_results = {}
+    mimic_cfg_path = cfg["general"].get("mimic_config")
+    mimic_sets = []
+    if mimic_cfg_path and os.path.exists(mimic_cfg_path):
+        with open(mimic_cfg_path, "rb") as f_m:
+            mimic_sets = tomllib.load(f_m)["sets"]
+    n_norm_test = int(np.sum(norm_mask_test))
+    for mset in mimic_sets:
+        if not os.path.exists(mset["features_path"]):
+            print(f"Mimic set '{mset['name']}': features file missing ({mset['features_path']}); skipped.")
+            continue
+        mim_meta = pd.read_csv(mset["attacks_path"])
+        mim_feat = pd.read_csv(mset["features_path"])
+        assert (mim_meta["row_id"].values == mim_feat["row_id"].values).all()
+        mim_scores = score_all_methods(mim_meta, mim_feat)
+        y_comb = np.r_[np.zeros(n_norm_test, dtype=int), np.ones(len(mim_meta), dtype=int)]
+        g_comb = np.r_[test_groups[norm_mask_test], mim_meta["group_id"].values]
+
+        print(f"\nMimic set '{mset['name']}' (donors from {mset['donor_split']} normals): N attacks = {len(mim_meta)}, "
+              f"SE converged = {int(mim_meta['converged_se'].sum())}, "
+              f"median |J_att - J_twin| = {np.median(np.abs(mim_meta['delta_J_vs_twin'])):.2e}, "
+              f"median max voltage shift = {np.median(mim_meta['shift_magnitude_pu']):.4f} pu "
+              f"(project exact AC attacks in test split: {np.median(test_meta.loc[exact_mask_test, 'shift_magnitude_pu']):.4f} pu)")
+        print(f"\n--- (5) MIMIC ATTACK BENCHMARK: {mset['name']} (N={len(y_comb):,}, VALIDATION THRESHOLDS) ---")
+        hdr_m = (f"{'Method':<25} | {'Realized Normal FA':<20} | {'Mimic AUC [95% CI]':<25} | {'Det @ 5% FA':<14} | {'Det @ 1% FA':<14} | "
+                 f"{'Exact AC Det @ 5% (Table 1)':<27} | {'Prec @5%':<8} | {'F1 @5%':<8} | {'Acc @5%':<8}")
+        print(hdr_m)
+        print("-" * len(hdr_m))
+        set_res = {}
+        for m_name, (scores, th5, th1, is_rc) in methods.items():
+            s_comb = np.r_[scores[norm_mask_test], mim_scores[m_name]]
+            f5 = compute_flags(s_comb, th5, is_rc)
+            f1_ = compute_flags(s_comb, th1, is_rc)
+            pos = y_comb == 1
+            auc_m = roc_auc_score(y_comb, s_comb)
+            ci_auc_m = group_bootstrap_ci(y_comb, s_comb, g_comb)
+            det5_m = np.mean(f5[pos]) * 100.0
+            ci_det5_m = group_bootstrap_ci(None, f5[pos], g_comb[pos], is_binary_flag=True)
+            det1_m = np.mean(f1_[pos]) * 100.0
+            ci_det1_m = group_bootstrap_ci(None, f1_[pos], g_comb[pos], is_binary_flag=True)
+            met = classification_metrics(f5, y_comb)
+            fa_s = f"{np.mean(f5[~pos]) * 100:5.2f}% / {np.mean(f1_[~pos]) * 100:5.2f}%"
+            auc_s = f"{auc_m:.4f} [{ci_auc_m[0]:.4f},{ci_auc_m[1]:.4f}]"
+            d5_s = f"{det5_m:5.2f}% [{ci_det5_m[0]:.1f},{ci_det5_m[1]:.1f}]"
+            d1_s = f"{det1_m:5.2f}% [{ci_det1_m[0]:.1f},{ci_det1_m[1]:.1f}]"
+            print(f"{m_name:<25} | {fa_s:<20} | {auc_s:<25} | {d5_s:<14} | {d1_s:<14} | {exact5_table1[m_name]:6.2f}%                     | "
+                  f"{met['prec']:6.2f}%  | {met['f1']:6.2f}%  | {met['acc']:6.2f}%")
+            set_res[m_name] = {"det5": det5_m, "flags5": f5[pos], "auc": auc_m}
+        mimic_results[mset["name"]] = {"meta": mim_meta, "res": set_res}
+
+    # Detection vs the size of the mimic shift (primary set = first set listed)
+    if mimic_results:
+        prim_name = next(iter(mimic_results))
+        pm = mimic_results[prim_name]
+        shift_bins = cfg["evaluation"]["mimic_shift_bins_pu"]
+        shift_labels = cfg["evaluation"]["mimic_shift_labels"]
+        sbin = pd.cut(pm["meta"]["shift_magnitude_pu"], bins=shift_bins, labels=shift_labels)
+        print(f"\n--- (6) Mimic Attacks ({prim_name}): Detection vs Max Voltage Shift (@ 5% FA) ---")
+        print(f"{'Voltage Shift Bin':<18} | {'Count':<6} | {'RF Primary':<12} | {'Autoencoder':<12} | {'Mahalanobis':<12} | {'Calibrated LNR':<15} | {'Chi-Square':<12}")
+        print("-" * 100)
+        for sl in shift_labels:
+            mk = (sbin == sl).values
+            cnt = int(mk.sum())
+            vals = [np.mean(pm["res"][k]["flags5"][mk]) * 100.0 if cnt > 0 else 0.0 for k in
+                    ["RF w/o D3 (Primary)", "Autoencoder (All: A-D2)", "Mahalanobis (Ledoit-Wolf)", "Calibrated LNR", "Chi-Square"]]
+            print(f"{sl:<18} | {cnt:<6} | {vals[0]:6.2f}%     | {vals[1]:6.2f}%     | {vals[2]:6.2f}%     | {vals[3]:6.2f}%         | {vals[4]:6.2f}%")
+
+        # Figure: exact AC (random c) vs mimic detection at 5% FA, per detector
+        res_dir_m = cfg["general"]["results_dir"]
+        os.makedirs(res_dir_m, exist_ok=True)
+        fig_methods = ["Chi-Square", "Calibrated LNR", "Per-Hour Max-Z", "Mahalanobis (Ledoit-Wolf)",
+                       "Autoencoder (D1+D2)", "Autoencoder (All: A-D2)", "RF w/o D3 (Primary)"]
+        xi = np.arange(len(fig_methods))
+        n_bars = 1 + len(mimic_results)
+        width = 0.8 / n_bars
+        plt.figure(figsize=(10, 5))
+        plt.bar(xi - 0.4 + width / 2, [exact5_table1[k] for k in fig_methods], width,
+                label="Exact AC, random state shift (Table 1)", color="steelblue", edgecolor="black")
+        colors = ["crimson", "salmon", "orange"]
+        for j, (nm, mr) in enumerate(mimic_results.items()):
+            plt.bar(xi - 0.4 + width * (j + 1.5), [mr["res"][k]["det5"] for k in fig_methods], width,
+                    label=f"Mimic exact AC ({nm.replace('_', ' ')})", color=colors[j % 3], edgecolor="black")
+        plt.axhline(5.0, color="gray", ls=":", label="5% false-alarm level (chance)")
+        plt.xticks(xi, [k.replace(" (Ledoit-Wolf)", "").replace("Autoencoder", "AE").replace(" (Primary)", "") for k in fig_methods],
+                   rotation=20, ha="right")
+        plt.ylabel("Detection rate at 5% validation false-alarm threshold (%)")
+        plt.title("Stealth-attack detection: random state shift vs distribution-aware (mimic) shift")
+        plt.ylim(0, 100)
+        plt.legend(loc="upper left", fontsize=8)
+        plt.grid(axis="y", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(f"{res_dir_m}/mimic_vs_exact.png", dpi=300)
+        plt.close()
+        print(f"  Saved: {res_dir_m}/mimic_vs_exact.png")
+
     # -------------------------------------------------------------------------
     # PART 5: HONESTY RULES & FIGURES GENERATION
     # -------------------------------------------------------------------------
@@ -782,7 +1041,7 @@ def main():
     plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
     plt.xlabel("False Positive Rate (Normal Rows)")
     plt.ylabel("True Positive Rate (All Attacks)")
-    plt.title("ROC Curves: All Attacks (N=2,000)")
+    plt.title(f"ROC Curves: All Attacks (N={len(y_test):,})")
     plt.legend(loc="lower right", fontsize=8)
     plt.grid(True, alpha=0.3)
 
@@ -795,7 +1054,7 @@ def main():
     plt.plot([0, 1], [0, 1], 'k--', alpha=0.5)
     plt.xlabel("False Positive Rate (Normal Rows)")
     plt.ylabel("True Positive Rate (Exact AC Attacks)")
-    plt.title("ROC Curves: Exact AC Attacks Only (N=1,332)")
+    plt.title(f"ROC Curves: Exact AC Attacks Only (N={int(np.sum(exact_sub_mask)):,})")
     plt.legend(loc="lower right", fontsize=8)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
@@ -901,6 +1160,7 @@ def main():
     print(f"  Saved: {res_dir}/limited_meter_shift_ratio.png")
 
     print("\nTask 8b execution finished successfully.")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

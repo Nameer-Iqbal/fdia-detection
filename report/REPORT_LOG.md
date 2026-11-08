@@ -1300,3 +1300,48 @@ Evaluated on limited-meter attacks in the standard test split ($N = 153$):
   4. [results/importance_bar_chart.png](file:///c:/Projects/fdia-detection/results/importance_bar_chart.png): Grouped permutation importance ($\Delta \text{AUC}$) with error bars across all feature groups.
   5. [results/limited_meter_shift_ratio.png](file:///c:/Projects/fdia-detection/results/limited_meter_shift_ratio.png): Limited-meter detection rate vs achieved shift ratio.
 
+
+---
+
+## Task 10: Independent Re-Verification, Mimic Attacks, Leak-Free Table 2, Classification Metrics, Noise Config & Low-Noise Check
+- **Date:** November 8, 2026
+- **All numbers:** `results/final_tables.md` (generated from the run logs by `python/make_final_tables.py`, verified by `python/check_tables.py`: 1,726 values, 0 problems). Tables earlier in this log are historical.
+
+### 1. Re-verification from scratch (Linux, Julia 1.13.1, Python 3.13.18, torch 2.15.0)
+- Power flow matches the Baran & Wu (1989) benchmark: losses 202.677 kW, minimum voltage 0.913090 pu at bus 18.
+- State estimation chi-square Monte Carlo: mean J 97.62 (expected 98), 4.7% false alarms at alpha = 0.05; Jacobian matches finite differences to 4.4e-8.
+- Normal dataset v2, attack dataset, splits and features reproduce the Task 7b/8 outputs exactly; every RF, BDD and Mahalanobis number in Table 1 is identical; Autoencoder rows differ by at most about 1 percentage point (PyTorch version).
+- Day-blocked split check (scratch analysis): RF AUC 0.924 vs 0.932 with the group split, so same-day operating points on both sides of the split do not inflate results.
+
+### 2. Distribution-aware ("mimic") exact AC stealth attacks (`julia/09_mimic_attacks.jl`)
+- **Design:** for each of the 1,000 test operating points, the attacker uses historical data to pick a genuine normal operating point from a different day at the same hour (donor) and injects the exact AC attack c = x_hat_donor - x_hat_target. Two donor sets: validation normals (primary; states no detector trained on) and training normals.
+- **Stealth verified:** |J_attacked - J_twin| median 2.6e-5; re-estimated state equals the donor state to 3e-5; 1,000/1,000 SE convergence. Median maximum voltage shift 0.0055 pu, versus 0.0040 pu for the project's own exact AC attacks.
+- **Result:** with the same trained models and thresholds as Table 1, detection at the 5% threshold collapses to the false-alarm level for every detector (RF 3.40% at 2.90% FA, Autoencoder 4.60% at 4.70% FA, Mahalanobis 6.10% at 6.70% FA; best AUC 0.578). The data-driven detectors flag atypical states, not physics violations.
+- **Safeguard:** `run_task8.py` re-scores the standard test rows through the same scoring path and asserts the scores match Table 1 before scoring mimic rows. This caught a float32 memory-layout difference (1.5e-6 relative) in the Autoencoder; fixed by making `AutoencoderDetector.score_samples` convert input to a contiguous array (Table 1 scores unchanged).
+
+### 3. State-proxy diagnostics (Part 4, item 4 of `run_task8.py`)
+- Group C leverage is a deterministic function of the state estimate (quadratic-ridge R^2 median 1.0000).
+- Group B: KCL power-balance mismatch and measured-vs-recomputed flow blocks are noise-dominated (R^2 about 0) and weak on exact AC attacks (AUC 0.588 and 0.497); the neighbour-voltage block (R^2 = 1.0000, exact AC AUC 0.973) carries all of Group B's signal. The earlier claim that KCL mismatches provide the strongest discrimination is withdrawn.
+
+### 4. Leak-free unseen-attack split (Table 2)
+- **Problem:** `python/splits.py` moved every held-out attack into the test set, leaving 2,026 of 2,511 held-out test attacks with their normal twin in training (violating the anti-leakage rule) and inflating N to 4,026.
+- **Fix:** held-out attacks are evaluated only in test groups; those in train/val groups are marked `unused`. Test set is now 1,000 normal + 1,000 attacked rows.
+- **Effect:** RF (seen-only) exact AC detection 87.95% (was 89.57%), overall AUC 0.9358 (was 0.8945). The conclusion stands; the superseded numbers are no longer reported.
+
+### 5. Classification metrics required by the brief
+- Accuracy, precision, recall, F1 and false-alarm rate at the 5% and 1% thresholds for every method, for Table 1, Table 2 and the mimic benchmarks (e.g. RF primary, Table 1 at 5%: accuracy 89.15%, precision 96.55%, recall 81.20%, F1 88.21%).
+
+### 6. Meter noise moved into configs + low-noise sensitivity check
+- Noise was hard-coded in `julia/05`-`08`; all scripts now read the `[noise]` section of the normal-data config named by `noise_config` (helper `read_noise_config` in `julia/04_attacks.jl`). Regenerated datasets are byte-identical (SHA-256) to the previous ones.
+- Low-noise variant (`configs/*_lownoise.toml`, same seeds): noise 0.001 / 0.001 / 0.0008 pu instead of 0.005 / 0.010 / 0.008 pu. Chi-square detection of linearised single-bus attacks rises from 17.14% to 36.00%; exact AC attacks stay at chance for BDD (3.61%); the Autoencoder detects 100% of random-shift exact AC attacks but only 4.60% of mimic attacks (5.20% FA). Only the RF with D3 (change from previous hour, clean-previous-sample assumption) keeps a weak mimic signal: AUC 0.657, 7.50% detection at 4.70% FA.
+
+### 7. Tooling and documentation
+- `python/make_final_tables.py` builds `results/final_tables.md` and the README headline block from the logs; `python/check_tables.py` now fails on any missing table or mismatched cell (the old version silently skipped sections its regexes did not find).
+- `python/run_task8.py` takes `[config] [log path]`; figure titles, sample counts and the chi-square clarification are computed rather than hard-coded.
+- README: reproduction commands corrected (`--project=julia`, `splits.py configs/features_v2.toml`, config-driven `07_sensitivity_features.jl`), stale numbers removed, threat-model table and limitations updated.
+- **New figure:** `results/mimic_vs_exact.png` (detection at 5% FA: random-shift exact AC vs mimic attacks, per detector). Low-noise figures in `results/lownoise/`.
+
+### Academic sources
+- Baran, M. E., & Wu, F. F. (1989). Network reconfiguration in distribution systems for loss reduction and load balancing. *IEEE Transactions on Power Delivery*, 4(2), 1401-1407. https://doi.org/10.1109/61.25627
+- Hug, G., & Giampapa, J. A. (2012). Vulnerability assessment of AC state estimation with respect to false data injection cyber-attacks. *IEEE Transactions on Smart Grid*, 3(3), 1362-1370. https://doi.org/10.1109/TSG.2012.2195338
+- Liu, Y., Ning, P., & Reiter, M. K. (2011). False data injection attacks against state estimation in electric power grids. *ACM Transactions on Information and System Security*, 14(1), Article 13. https://doi.org/10.1145/1952982.1952995
